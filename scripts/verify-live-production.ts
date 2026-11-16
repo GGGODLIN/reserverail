@@ -208,15 +208,16 @@ export async function runLiveProductionSmoke(config: LiveSmokeConfig): Promise<v
     });
     const proposeJson = (await proposeRes.json()) as {
       readonly reserveRailResult: {
-        readonly decision: string;
+        readonly approved: boolean;
+        readonly reasonCode: string;
         readonly receipt?: TreasuryReceipt;
       };
     };
     assert.equal(proposeRes.status, 200, "POST /api/demo/propose must return HTTP 200");
     assert.equal(
-      proposeJson.reserveRailResult.decision,
-      "APPROVE",
-      "Valid AWS 12,000 transition must be APPROVED",
+      proposeJson.reserveRailResult.approved,
+      true,
+      "Valid AWS 12,000 transition must be approved",
     );
     assert.equal(
       proposeJson.reserveRailResult.receipt?.provenance.mode,
