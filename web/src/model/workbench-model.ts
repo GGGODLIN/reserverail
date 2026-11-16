@@ -57,20 +57,6 @@ export interface PrivateWitnessBounds {
 
 export type CircuitPreview = "WITHIN_BOUNDS" | "EPOCH_CAP_EXCEEDED" | "PAYROLL_FLOOR_BREACH";
 
-export interface SpendHeadroom {
-  readonly maxAmount: bigint;
-  readonly binding: "EPOCH_SPEND_CAP" | "PAYROLL_RESERVE_FLOOR";
-}
-
-export function spendHeadroom(bounds: PrivateWitnessBounds): SpendHeadroom {
-  const spent = BigInt(bounds.spentSoFar);
-  const capRoom = BigInt(bounds.epochCap) - spent;
-  const floorRoom = BigInt(bounds.balance) - BigInt(bounds.payrollFloor) - spent;
-  const floorBinds = floorRoom < capRoom;
-  const room = floorBinds ? floorRoom : capRoom;
-  return { maxAmount: room > 0n ? room : 0n, binding: floorBinds ? "PAYROLL_RESERVE_FLOOR" : "EPOCH_SPEND_CAP" };
-}
-
 // Mirrors the circuit's check order (cap before floor), so the preview names the code the prover would hit.
 export function previewCircuitOutcome(bounds: PrivateWitnessBounds, amount: bigint): CircuitPreview {
   const newSpent = BigInt(bounds.spentSoFar) + amount;

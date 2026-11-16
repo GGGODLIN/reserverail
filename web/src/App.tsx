@@ -2,7 +2,7 @@ import { Comparison } from "./components/Comparison.tsx";
 import { AuditorPanel, CfoPanel } from "./components/Perspectives.tsx";
 import { MainnetLinks, VerificationPanel } from "./components/Verification.tsx";
 import type { AllowlistVendor, CfoView } from "./api-types.ts";
-import { formatAmount, previewCircuitOutcome, spendHeadroom } from "./model/workbench-model.ts";
+import { previewCircuitOutcome } from "./model/workbench-model.ts";
 import type { RelayMode } from "./model/workbench-model.ts";
 import { selectedReceipt, useWorkbench } from "./store.ts";
 import type { ActKey, BusyKind, Draft, WorkbenchStore } from "./store.ts";
@@ -126,14 +126,13 @@ function circuitPreview(cfo: CfoView | null, amount: string): { readonly text: s
   if (!/^[0-9]+$/.test(trimmed)) {
     return { text: "Circuit preview: enter a whole-number amount to see which bound it meets.", tone: "muted" };
   }
-  const headroom = formatAmount(spendHeadroom(cfo).maxAmount.toString());
   switch (previewCircuitOutcome(cfo, BigInt(trimmed))) {
     case "WITHIN_BOUNDS":
-      return { text: `Circuit preview: within bounds — headroom ${headroom}.`, tone: "ok" };
+      return { text: "Circuit preview: within bounds.", tone: "ok" };
     case "PAYROLL_FLOOR_BREACH":
-      return { text: `Circuit preview: would breach the payroll reserve floor (headroom ${headroom}).`, tone: "no" };
+      return { text: "Circuit preview: would breach the payroll reserve floor.", tone: "no" };
     case "EPOCH_CAP_EXCEEDED":
-      return { text: `Circuit preview: would exceed the epoch spend cap (headroom ${headroom}).`, tone: "no" };
+      return { text: "Circuit preview: would exceed the epoch spend cap.", tone: "no" };
   }
 }
 

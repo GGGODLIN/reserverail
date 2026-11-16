@@ -12,7 +12,6 @@ import {
   isFinalReceiptStatus,
   previewCircuitOutcome,
   receiptStageProgress,
-  spendHeadroom,
   ticketOf,
 } from "../web/src/model/workbench-model.ts";
 
@@ -119,14 +118,12 @@ describe("Ticket 03 workbench model", () => {
   });
 
   it("Story 6: editing the amount across C0 thresholds flips the circuit outcome preview", () => {
-    assert.deepEqual(spendHeadroom(C0_BOUNDS), { maxAmount: 40_000n, binding: "PAYROLL_RESERVE_FLOOR" });
     assert.equal(previewCircuitOutcome(C0_BOUNDS, 40_000n), "WITHIN_BOUNDS");
     assert.equal(previewCircuitOutcome(C0_BOUNDS, 40_001n), "PAYROLL_FLOOR_BREACH");
     assert.equal(previewCircuitOutcome(C0_BOUNDS, 50_001n), "EPOCH_CAP_EXCEEDED");
 
     // Act 2 after two $12,000 shots, and Act 3 after the race winner: the server rejected the next request with these codes.
     const act2AfterTwoShots = { balance: "100000", payrollFloor: "55000", epochCap: "30000", spentSoFar: "24000" };
-    assert.deepEqual(spendHeadroom(act2AfterTwoShots), { maxAmount: 6_000n, binding: "EPOCH_SPEND_CAP" });
     assert.equal(previewCircuitOutcome(act2AfterTwoShots, 12_000n), "EPOCH_CAP_EXCEEDED");
     const act3AfterWinner = { balance: "100000", payrollFloor: "60000", epochCap: "50000", spentSoFar: "25000" };
     assert.equal(previewCircuitOutcome(act3AfterWinner, 25_000n), "PAYROLL_FLOOR_BREACH");

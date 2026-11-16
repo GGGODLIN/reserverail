@@ -5,7 +5,6 @@ import {
   confidentialFieldsInSignals,
   fieldToHex,
   formatAmount,
-  spendHeadroom,
 } from "../model/workbench-model.ts";
 import { HexValue } from "./HexValue.tsx";
 
@@ -16,7 +15,6 @@ interface CfoPanelProps {
 }
 
 export function CfoPanel({ cfo, open, onToggle }: CfoPanelProps) {
-  const headroom = cfo === null ? null : spendHeadroom(cfo);
   return (
     <section className="panel panel-cfo" aria-labelledby="cfo-heading">
       <h2 id="cfo-heading" className="panel-title">
@@ -29,7 +27,7 @@ export function CfoPanel({ cfo, open, onToggle }: CfoPanelProps) {
       </h2>
       <p className="tag tag-private">PRIVATE WITNESS — loaded locally, never on-chain</p>
       <div id="cfo-body" hidden={!open}>
-        {cfo === null || headroom === null ? (
+        {cfo === null ? (
           <p className="empty">Loading the private witness…</p>
         ) : (
           <>
@@ -50,13 +48,6 @@ export function CfoPanel({ cfo, open, onToggle }: CfoPanelProps) {
                 <tr>
                   <th scope="row">Spent this epoch</th>
                   <td>{formatAmount(cfo.spentSoFar)}</td>
-                </tr>
-                <tr>
-                  <th scope="row">Headroom</th>
-                  <td>
-                    {formatAmount(headroom.maxAmount.toString())} ·{" "}
-                    {headroom.binding === "PAYROLL_RESERVE_FLOOR" ? "payroll floor binds" : "epoch cap binds"}
-                  </td>
                 </tr>
               </tbody>
             </table>

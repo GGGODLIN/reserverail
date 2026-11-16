@@ -9,8 +9,6 @@ import type {
   TreasuryReceipt,
 } from "./api-types.ts";
 
-export class ApiError extends Error {}
-
 async function readJson<T>(response: Response): Promise<T> {
   const body: unknown = await response.json().catch(() => null);
   if (!response.ok) {
@@ -18,7 +16,7 @@ async function readJson<T>(response: Response): Promise<T> {
       typeof body === "object" && body !== null && "error" in body && typeof body.error === "string"
         ? body.error
         : `HTTP ${response.status}`;
-    throw new ApiError(message);
+    throw new Error(message);
   }
   return body as T;
 }

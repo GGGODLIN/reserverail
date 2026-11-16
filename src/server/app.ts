@@ -26,7 +26,7 @@ import { AgentEndpointHandler } from "./agent-handler.ts";
 
 const SMALL_BODY_MAX_BYTES = 16 * 1024;
 
-const DEFAULT_WEB_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "dist", "web");
+const WEB_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "dist", "web");
 
 const WORKBENCH_CONTENT_TYPES: Readonly<Record<string, string>> = {
   ".html": "text/html; charset=utf-8",
@@ -51,7 +51,6 @@ export interface ReserveRailServerOptions {
   readonly amdTokenLabApiKey?: string;
   readonly llmFetchImpl?: typeof globalThis.fetch;
   readonly llmTimeoutMs?: number;
-  readonly webRoot?: string;
 }
 
 export interface ReserveRailServerHandle {
@@ -347,7 +346,6 @@ export async function createReserveRailServer(
           })
         : null;
   const relayMode = kurierClient !== null ? "LIVE" : "DETERMINISTIC_REPLAY";
-  const webRoot = path.resolve(options.webRoot ?? DEFAULT_WEB_ROOT);
 
   const semaphore = new ProvingSemaphore(options.maxProvingConcurrency ?? 2);
   const cassette = loadBaselineMainnetCassette();
@@ -955,7 +953,7 @@ export async function createReserveRailServer(
         return;
       }
 
-      if (method === "GET" && (await serveWorkbenchFile(res, pathname, webRoot))) {
+      if (method === "GET" && (await serveWorkbenchFile(res, pathname, WEB_ROOT))) {
         return;
       }
 

@@ -9,7 +9,6 @@ import { createReserveRailServer } from "../../../src/server/app.ts";
 // Test-only entry: the real ReserveRail server wired to a simulated Kurier relay, so the workbench's
 // LIVE path (Submitted -> IncludedInBlock -> Finalized) runs with no credentials and no network.
 // Stage timings are slow enough for the browser to observe each stage between polls.
-const SUBMIT_LATENCY_MS = 400;
 const INCLUDED_AFTER_MS = 1_500;
 const FINALIZED_AFTER_MS = 4_000;
 
@@ -35,7 +34,6 @@ function urlOf(input: string | URL | Request): string {
 async function simulatedKurier(input: string | URL | Request, init?: RequestInit): Promise<Response> {
   const url = urlOf(input);
   if (url.includes("/submit-proof/")) {
-    await new Promise((resolve) => setTimeout(resolve, SUBMIT_LATENCY_MS));
     const payload = JSON.parse(String(init?.body ?? "{}")) as {
       readonly proofData?: { readonly proof?: Groth16Proof; readonly publicSignals?: string[] };
     };
