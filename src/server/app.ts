@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
+import fs from "node:fs/promises";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { verifyTransitionProof } from "../circuit/prover.ts";
 import { REGISTERED_VK_HASH, VERIFICATION_KEY } from "../generated/circuit-abi.ts";
@@ -23,6 +26,16 @@ import { AgentEndpointHandler } from "./agent-handler.ts";
 
 const SMALL_BODY_MAX_BYTES = 16 * 1024;
 
+const DEFAULT_WEB_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "dist", "web");
+
+const WORKBENCH_CONTENT_TYPES: Readonly<Record<string, string>> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".wasm": "application/wasm",
+};
+
 export interface ReserveRailServerOptions {
   readonly dbPath?: string;
   readonly maxDemoSandboxes?: number;
@@ -38,6 +51,7 @@ export interface ReserveRailServerOptions {
   readonly amdTokenLabApiKey?: string;
   readonly llmFetchImpl?: typeof globalThis.fetch;
   readonly llmTimeoutMs?: number;
+  readonly webRoot?: string;
 }
 
 export interface ReserveRailServerHandle {
@@ -172,6 +186,39 @@ function sendJson(
   res.end(text);
 }
 
+// Serves the built workbench (index.html and dist/web assets) without ever reading outside webRoot.
+async function serveWorkbenchFile(res: http.ServerResponse, pathname: string, webRoot: string): Promise<boolean> {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return false;
+  }
+  const target = path.resolve(webRoot, decoded === "/" ? "index.html" : `.${decoded}`);
+  // Encoded "..", doubled slashes and absolute segments all resolve outside the root and fall through to 404.
+  if (!target.startsWith(`${webRoot}${path.sep}`)) {
+    return false;
+  }
+  const contentType = WORKBENCH_CONTENT_TYPES[path.extname(target).toLowerCase()];
+  if (contentType === undefined) {
+    return false;
+  }
+  let body: Buffer;
+  try {
+    body = await fs.readFile(target);
+  } catch {
+    return false;
+  }
+  res.writeHead(200, {
+    "content-type": contentType,
+    "content-length": String(body.length),
+    "cache-control": "no-cache",
+    "x-content-type-options": "nosniff",
+  });
+  res.end(body);
+  return true;
+}
+
 function serializeIntent(intent: ProposedPaymentIntent): Record<string, unknown> {
   return {
     vendorName: intent.vendorName,
@@ -213,6 +260,7 @@ async function buildDemoStateResponse(
   store: ReserveRailStore,
   service: TreasuryLedgerService,
   sandboxId: string,
+  relayMode: "LIVE" | "DETERMINISTIC_REPLAY",
 ): Promise<Record<string, unknown>> {
   const sbx = store.getOrCreateSandbox(sandboxId, "demo");
   const receipts = store.getReceipts(sandboxId);
@@ -240,6 +288,7 @@ async function buildDemoStateResponse(
 
   return {
     sandboxId: sbx.sandboxId,
+    relayMode,
     cfoView: {
       balance: sbx.balance,
       payrollFloor: sbx.payrollFloor,
@@ -297,6 +346,8 @@ export async function createReserveRailServer(
             },
           })
         : null;
+  const relayMode = kurierClient !== null ? "LIVE" : "DETERMINISTIC_REPLAY";
+  const webRoot = path.resolve(options.webRoot ?? DEFAULT_WEB_ROOT);
 
   const semaphore = new ProvingSemaphore(options.maxProvingConcurrency ?? 2);
   const cassette = loadBaselineMainnetCassette();
@@ -435,7 +486,7 @@ export async function createReserveRailServer(
           sendJson(res, sbxResolved.status, { ok: false, error: sbxResolved.error });
           return;
         }
-        const statePayload = await buildDemoStateResponse(store, service, sbxResolved.sandboxId);
+        const statePayload = await buildDemoStateResponse(store, service, sbxResolved.sandboxId, relayMode);
         sendJson(res, 200, statePayload);
         return;
       }
@@ -509,7 +560,7 @@ export async function createReserveRailServer(
             mode: body.mode,
             clientIp,
           });
-          const statePayload = await buildDemoStateResponse(store, service, sbxResolved.sandboxId);
+          const statePayload = await buildDemoStateResponse(store, service, sbxResolved.sandboxId, relayMode);
           sendJson(res, 200, {
             ok: true,
             sandboxId: sbxResolved.sandboxId,
@@ -576,7 +627,7 @@ export async function createReserveRailServer(
             mode,
             clientIp,
           });
-          const statePayload = await buildDemoStateResponse(store, service, sandboxId);
+          const statePayload = await buildDemoStateResponse(store, service, sandboxId, relayMode);
           sendJson(res, 200, {
             ok: true,
             actId,
@@ -622,7 +673,7 @@ export async function createReserveRailServer(
               reserveRailResult: step.reserveRailResult,
             });
           }
-          const statePayload = await buildDemoStateResponse(store, service, sandboxId);
+          const statePayload = await buildDemoStateResponse(store, service, sandboxId, relayMode);
           sendJson(res, 200, {
             ok: true,
             actId,
@@ -691,7 +742,7 @@ export async function createReserveRailServer(
           }),
         ]);
 
-        const statePayload = await buildDemoStateResponse(store, service, sandboxId);
+        const statePayload = await buildDemoStateResponse(store, service, sandboxId, relayMode);
         sendJson(res, 200, {
           ok: true,
           actId,
@@ -773,7 +824,7 @@ export async function createReserveRailServer(
           return;
         }
 
-        const statePayload = await buildDemoStateResponse(store, service, sbxResolved.sandboxId);
+        const statePayload = await buildDemoStateResponse(store, service, sbxResolved.sandboxId, relayMode);
         sendJson(res, 200, { ok: true, state: statePayload });
         return;
       }
@@ -901,6 +952,10 @@ export async function createReserveRailServer(
           const msg = err instanceof Error ? err.message : "Chain verification error";
           sendJson(res, 400, { ok: false, code: "VERIFY_ERROR", error: msg });
         }
+        return;
+      }
+
+      if (method === "GET" && (await serveWorkbenchFile(res, pathname, webRoot))) {
         return;
       }
 
