@@ -1,0 +1,187 @@
+{
+  "circuitFile": "circuits/reserverail.circom",
+  "constraintCount": 9055,
+  "nPublic": 7,
+  "publicSignalWireOrder": [
+    "policyRoot",
+    "prevCommitment",
+    "newCommitment",
+    "recipient",
+    "amount",
+    "epoch",
+    "invoiceHash"
+  ],
+  "ptauCeremonyFile": "ppot_0080_14.ptau",
+  "rules": {
+    "UINT64_RANGE_CHECKS": {
+      "ruleId": "UINT64_RANGE_CHECKS",
+      "file": "circuits/reserverail.circom",
+      "startLine": 30,
+      "endLine": 45,
+      "description": "Enforce 64-bit unsigned range on monetary and epoch inputs to block finite-field wraparound",
+      "symbols": [
+        "main.amountBits.out[0]",
+        "main.amountBits.out[1]",
+        "main.amountBits.out[2]",
+        "main.amountBits.out[3]",
+        "main.amountBits.out[4]",
+        "main.amountBits.out[5]",
+        "main.amountBits.out[6]",
+        "main.amountBits.out[7]"
+      ]
+    },
+    "ALLOWLIST_MERKLE_INCLUSION": {
+      "ruleId": "ALLOWLIST_MERKLE_INCLUSION",
+      "file": "circuits/reserverail.circom",
+      "startLine": 47,
+      "endLine": 60,
+      "description": "Verify recipient leaf belongs to confidential Vendor Allowlist with binary path selectors",
+      "symbols": [
+        "main.allowlistMerkle.out",
+        "main.allowlistMerkle.leaf",
+        "main.allowlistMerkle.depth",
+        "main.allowlistMerkle.indices[0]",
+        "main.allowlistMerkle.indices[1]",
+        "main.allowlistMerkle.indices[2]",
+        "main.allowlistMerkle.indices[3]",
+        "main.allowlistMerkle.indices[4]"
+      ]
+    },
+    "EPOCH_MONOTONICITY": {
+      "ruleId": "EPOCH_MONOTONICITY",
+      "file": "circuits/reserverail.circom",
+      "startLine": 62,
+      "endLine": 67,
+      "description": "Prevent stale epoch regression from resetting cumulative epoch spend backwards",
+      "symbols": [
+        "main.epochNonDecreasing.out",
+        "main.epochNonDecreasing.in[0]",
+        "main.epochNonDecreasing.in[1]",
+        "main.epochNonDecreasing.lt.out",
+        "main.epochNonDecreasing.lt.in[0]",
+        "main.epochNonDecreasing.lt.in[1]",
+        "main.epochNonDecreasing.lt.n2b.out[0]",
+        "main.epochNonDecreasing.lt.n2b.out[1]"
+      ]
+    },
+    "EPOCH_SPEND_ACCUMULATION": {
+      "ruleId": "EPOCH_SPEND_ACCUMULATION",
+      "file": "circuits/reserverail.circom",
+      "startLine": 69,
+      "endLine": 79,
+      "description": "Accumulate spentSoFar in same epoch or reset baseSpent to zero on epoch advance",
+      "symbols": [
+        "main.sameEpoch",
+        "main.baseSpent",
+        "main.newSpent",
+        "main.isSameEpoch.out",
+        "main.isSameEpoch.in[0]",
+        "main.isSameEpoch.in[1]",
+        "main.isSameEpoch.isz.out",
+        "main.isSameEpoch.isz.in"
+      ]
+    },
+    "EPOCH_SPEND_CAP_BOUND": {
+      "ruleId": "EPOCH_SPEND_CAP_BOUND",
+      "file": "circuits/reserverail.circom",
+      "startLine": 81,
+      "endLine": 86,
+      "description": "Pure-addition Epoch Spend Cap inequality (newSpent <= epochCap) over 65-bit sum domain",
+      "symbols": [
+        "main.withinEpochCap.out",
+        "main.withinEpochCap.in[0]",
+        "main.withinEpochCap.in[1]",
+        "main.withinEpochCap.lt.out",
+        "main.withinEpochCap.lt.in[0]",
+        "main.withinEpochCap.lt.in[1]",
+        "main.withinEpochCap.lt.n2b.out[0]",
+        "main.withinEpochCap.lt.n2b.out[1]"
+      ]
+    },
+    "PAYROLL_RESERVE_FLOOR_BOUND": {
+      "ruleId": "PAYROLL_RESERVE_FLOOR_BOUND",
+      "file": "circuits/reserverail.circom",
+      "startLine": 88,
+      "endLine": 93,
+      "description": "Pure-addition Payroll Reserve Floor inequality (newSpent + payrollFloor <= balance) over 66-bit sum domain",
+      "symbols": [
+        "main.withinReserveFloor.out",
+        "main.withinReserveFloor.in[0]",
+        "main.withinReserveFloor.in[1]",
+        "main.withinReserveFloor.lt.out",
+        "main.withinReserveFloor.lt.in[0]",
+        "main.withinReserveFloor.lt.in[1]",
+        "main.withinReserveFloor.lt.n2b.out[0]",
+        "main.withinReserveFloor.lt.n2b.out[1]"
+      ]
+    },
+    "POLICY_COMMITMENT_BINDING": {
+      "ruleId": "POLICY_COMMITMENT_BINDING",
+      "file": "circuits/reserverail.circom",
+      "startLine": 95,
+      "endLine": 102,
+      "description": "Bind confidential Vendor Allowlist root, Epoch Spend Cap, and Payroll Reserve Floor to policyRoot",
+      "symbols": [
+        "main.policyHasher.out",
+        "main.policyHasher.inputs[0]",
+        "main.policyHasher.inputs[1]",
+        "main.policyHasher.inputs[2]",
+        "main.policyHasher.inputs[3]",
+        "main.policyHasher.pEx.out[0]",
+        "main.policyHasher.pEx.inputs[0]",
+        "main.policyHasher.pEx.inputs[1]"
+      ]
+    },
+    "PREV_COMMITMENT_BINDING": {
+      "ruleId": "PREV_COMMITMENT_BINDING",
+      "file": "circuits/reserverail.circom",
+      "startLine": 104,
+      "endLine": 111,
+      "description": "Bind prior confidential balance, spentSoFar, and prevEpoch to C_old (prevCommitment)",
+      "symbols": [
+        "main.prevHasher.out",
+        "main.prevHasher.inputs[0]",
+        "main.prevHasher.inputs[1]",
+        "main.prevHasher.inputs[2]",
+        "main.prevHasher.inputs[3]",
+        "main.prevHasher.pEx.out[0]",
+        "main.prevHasher.pEx.inputs[0]",
+        "main.prevHasher.pEx.inputs[1]"
+      ]
+    },
+    "NEW_COMMITMENT_BINDING": {
+      "ruleId": "NEW_COMMITMENT_BINDING",
+      "file": "circuits/reserverail.circom",
+      "startLine": 113,
+      "endLine": 120,
+      "description": "Bind updated newSpent and epoch to deterministic C_new (newCommitment)",
+      "symbols": [
+        "main.newHasher.out",
+        "main.newHasher.inputs[0]",
+        "main.newHasher.inputs[1]",
+        "main.newHasher.inputs[2]",
+        "main.newHasher.inputs[3]",
+        "main.newHasher.pEx.out[0]",
+        "main.newHasher.pEx.inputs[0]",
+        "main.newHasher.pEx.inputs[1]"
+      ]
+    },
+    "INVOICE_HASH_BINDING": {
+      "ruleId": "INVOICE_HASH_BINDING",
+      "file": "circuits/reserverail.circom",
+      "startLine": 122,
+      "endLine": 127,
+      "description": "Bind public Invoice Digest to recipient and invoiceIdField",
+      "symbols": [
+        "main.invoiceHasher.out",
+        "main.invoiceHasher.inputs[0]",
+        "main.invoiceHasher.inputs[1]",
+        "main.invoiceHasher.pEx.out[0]",
+        "main.invoiceHasher.pEx.inputs[0]",
+        "main.invoiceHasher.pEx.inputs[1]",
+        "main.invoiceHasher.pEx.initialState",
+        "main.invoiceHasher.pEx.ark[0].out[0]"
+      ]
+    }
+  }
+}
