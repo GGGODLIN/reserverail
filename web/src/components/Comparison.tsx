@@ -130,7 +130,10 @@ function GateColumn({ steps, receipts }: GateColumnProps) {
   const live = new Map(receipts.map((receipt) => [receipt.receiptId, receipt]));
   // The runner-up of a race is re-evaluated against whatever head the winner left behind.
   const leaseHead = commitmentLabel(
-    Math.max(0, ...steps.map((step) => (step.reserveRailResult.approved ? step.reserveRailResult.seq ?? 0 : 0))),
+    Math.max(
+      chain.at(-1)?.seq ?? 0,
+      ...steps.map((step) => (step.reserveRailResult.approved ? step.reserveRailResult.seq ?? 0 : 0)),
+    ),
   );
   return (
     <section className="column column-gate" aria-labelledby="gate-heading">

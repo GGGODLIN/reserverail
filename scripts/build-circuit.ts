@@ -289,6 +289,9 @@ function parseFieldSignal(raw: string | bigint | undefined, name: string): bigin
   if (raw === undefined) {
     throw new RangeError(\`Missing public signal "\${name}"\`);
   }
+  if (typeof raw === "string" && !/^(0|[1-9][0-9]*)$/.test(raw)) {
+    throw new RangeError(\`Public signal "\${name}" must be a non-negative decimal integer\`);
+  }
   const value = typeof raw === "bigint" ? raw : BigInt(raw);
   if (value < 0n || value >= SNARK_SCALAR_FIELD) {
     throw new RangeError(\`Public signal "\${name}" is outside bn128 scalar field\`);

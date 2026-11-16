@@ -102,6 +102,9 @@ export interface AuditChainVerificationResult {
 }
 
 function normalizeFieldString(value: string | bigint, label: string): string {
+  if (typeof value === "string" && !DECIMAL_BIGINT_RE.test(value)) {
+    throw new RangeError(`${label} must be a non-negative decimal integer string`);
+  }
   const big = typeof value === "bigint" ? value : BigInt(value);
   if (big < 0n || big >= SNARK_SCALAR_FIELD) {
     throw new RangeError(`${label} is outside bn128 scalar field`);
@@ -129,7 +132,7 @@ export async function verifyAuditChain(
     };
   }
 
-  const parsedReceipts: TreasuryReceipt[] = [];
+  const parsedReceipts: Array<{ readonly index: number; readonly receipt: TreasuryReceipt }> = [];
   for (let i = 0; i < receipts.length; i += 1) {
     const parsed = TreasuryReceiptSchema.safeParse(receipts[i]);
     if (!parsed.success) {
@@ -141,19 +144,19 @@ export async function verifyAuditChain(
       });
       continue;
     }
-    parsedReceipts.push(parsed.data);
+    parsedReceipts.push({ index: i, receipt: parsed.data });
   }
 
   const seenPrevCommitments = new Set<string>();
   const seenInvoiceHashes = new Set<string>();
   const knownNewCommitments = new Set<string>(
-    parsedReceipts.map((r) => r.publicSignals.newCommitment),
+    parsedReceipts.map((r) => r.receipt.publicSignals.newCommitment),
   );
 
   let expectedPrev = normalizedGenesis;
 
-  for (let i = 0; i < parsedReceipts.length; i += 1) {
-    const receipt = parsedReceipts[i]!;
+  for (const entry of parsedReceipts) {
+    const { index: i, receipt } = entry;
     const { publicSignals, publicSignalsArray } = receipt;
 
     let arrayMatchesObject = true;
@@ -255,8 +258,10 @@ export async function verifyAuditChain(
     }
   }
 
-  const lastReceipt = parsedReceipts[parsedReceipts.length - 1];
-  const headCommitment = lastReceipt ? lastReceipt.publicSignals.newCommitment : normalizedGenesis;
+  const lastEntry = parsedReceipts[parsedReceipts.length - 1];
+  const headCommitment = lastEntry
+    ? lastEntry.receipt.publicSignals.newCommitment
+    : normalizedGenesis;
 
   return {
     valid: violations.length === 0,

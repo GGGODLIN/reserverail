@@ -8,7 +8,11 @@ import { z } from "zod";
 import { verifyTransitionProof } from "../circuit/prover.ts";
 import { REGISTERED_VK_HASH, VERIFICATION_KEY } from "../generated/circuit-abi.ts";
 import { KurierClient } from "../kurier/kurier-client.ts";
-import { Groth16ProofSchema, verifyAuditChain } from "../engine/audit-chain.ts";
+import {
+  Groth16ProofSchema,
+  PublicSignalsObjectSchema,
+  verifyAuditChain,
+} from "../engine/audit-chain.ts";
 import {
   MAX_MEMO_CHARS,
   NaiveSingleCapExecutor,
@@ -103,18 +107,11 @@ const TamperBodySchema = z
     receipt: z
       .object({
         proof: Groth16ProofSchema,
-        publicSignalsArray: z.array(z.string()).length(7).optional(),
-        publicSignals: z
-          .object({
-            policyRoot: z.string(),
-            prevCommitment: z.string(),
-            newCommitment: z.string(),
-            recipient: z.string(),
-            amount: z.string(),
-            epoch: z.string(),
-            invoiceHash: z.string(),
-          })
+        publicSignalsArray: z
+          .array(z.string().regex(/^(0|[1-9][0-9]*)$/))
+          .length(7)
           .optional(),
+        publicSignals: PublicSignalsObjectSchema.optional(),
       })
       .optional(),
   })
@@ -169,6 +166,7 @@ function sendJson(
   statusCode: number,
   data: unknown,
   closeConnection = false,
+  hmacSecret?: string,
 ): void {
   const text = JSON.stringify(data);
   const headers: Record<string, string> = {
@@ -178,6 +176,12 @@ function sendJson(
     "access-control-allow-methods": "GET,POST,OPTIONS",
     "access-control-allow-headers": "content-type,x-agent-games-signature",
   };
+  if (hmacSecret !== undefined && hmacSecret.trim().length > 0) {
+    headers["x-agent-games-signature"] = crypto
+      .createHmac("sha256", hmacSecret.trim())
+      .update(text, "utf8")
+      .digest("hex");
+  }
   if (closeConnection) {
     headers.connection = "close";
   }
@@ -351,16 +355,20 @@ export async function createReserveRailServer(
   const cassette = loadBaselineMainnetCassette();
 
   // Warm up bn128 curve worker once at startup and validate baseline cassette
-  await verifyTransitionProof(
+  const cassetteOk = await verifyTransitionProof(
     cassette.validTransition.proof,
     cassette.validTransition.publicSignalsArray,
     VERIFICATION_KEY,
   );
+  if (!cassetteOk) {
+    throw new Error("Baseline mainnet cassette failed local Groth16 verification");
+  }
 
   const service = new TreasuryLedgerService({
     store,
     semaphore,
     kurierClient,
+    scrubKey: trimmedKurierKey.length > 0 ? trimmedKurierKey : undefined,
     cassette,
     submitMaxRetries: options.submitMaxRetries,
     submitRetryDelayMs: options.submitRetryDelayMs,
@@ -370,11 +378,13 @@ export async function createReserveRailServer(
 
   const maritacaKey = options.maritacaApiKey ?? process.env.MARITACA_API_KEY;
   const amdKey = options.amdTokenLabApiKey ?? process.env.AMD_TOKEN_LAB_API_KEY;
+  const effectiveAgentHmacSecret =
+    options.agentHmacSecret ?? process.env.AGENT_GAMES_HMAC_SECRET;
 
   const agentHandler = new AgentEndpointHandler({
     store,
     service,
-    hmacSecret: options.agentHmacSecret ?? process.env.AGENT_GAMES_HMAC_SECRET,
+    hmacSecret: effectiveAgentHmacSecret,
     hmacSecretPrevious:
       options.agentHmacSecretPrevious ?? process.env.AGENT_GAMES_HMAC_SECRET_PREVIOUS,
     softDeadlineMs: options.agentSoftDeadlineMs ?? 45_000,
@@ -416,6 +426,7 @@ export async function createReserveRailServer(
       llmFetchImpl: options.llmFetchImpl,
       llmTimeoutMs: options.llmTimeoutMs,
       clientIp: params.clientIp,
+      defaultEpoch: BigInt(sbx.currentEpoch),
     });
 
     const naiveResult = naiveExecutor.execute(store, params.sandboxId, intent);
@@ -465,16 +476,34 @@ export async function createReserveRailServer(
             rawBody = await readRawBody(req, SMALL_BODY_MAX_BYTES);
           } catch (err: unknown) {
             if (err instanceof PayloadTooLargeError) {
-              sendJson(res, 413, { ok: false, code: "PAYLOAD_TOO_LARGE", error: err.message }, true);
+              sendJson(
+                res,
+                413,
+                { ok: false, code: "PAYLOAD_TOO_LARGE", error: err.message },
+                true,
+                effectiveAgentHmacSecret,
+              );
               return;
             }
-            sendJson(res, 400, { ok: false, code: "READ_ERROR", error: "Unable to read request body" });
+            sendJson(
+              res,
+              400,
+              { ok: false, code: "READ_ERROR", error: "Unable to read request body" },
+              false,
+              effectiveAgentHmacSecret,
+            );
             return;
           }
           await agentHandler.handlePost(req, res, rawBody);
           return;
         }
-        sendJson(res, 405, { ok: false, error: "Method not allowed" });
+        sendJson(
+          res,
+          405,
+          { ok: false, error: "Method not allowed" },
+          false,
+          effectiveAgentHmacSecret,
+        );
         return;
       }
 
@@ -871,12 +900,17 @@ export async function createReserveRailServer(
               ]
             : undefined);
 
-        const tamperRes = await service.tamperCheck({
-          proof: r?.proof,
-          publicSignalsArray: signalsArr,
-          tamperedAmount: validated.data.tamperedAmount,
-        });
-        sendJson(res, 200, tamperRes);
+        try {
+          const tamperRes = await service.tamperCheck({
+            proof: r?.proof,
+            publicSignalsArray: signalsArr,
+            tamperedAmount: validated.data.tamperedAmount,
+          });
+          sendJson(res, 200, tamperRes);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : "Invalid tamper request";
+          sendJson(res, 400, { ok: false, code: "INVALID_TAMPER_INPUT", error: msg });
+        }
         return;
       }
 

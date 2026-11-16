@@ -153,6 +153,16 @@ describe("Ticket 02 — Signed /agent Endpoint (HMAC, Preflight, Idempotency, So
     const kurierClient = new KurierClient({
       apiKey: FAKE_KURIER_KEY,
       fetchImpl: mockKurierFetch,
+      createWebSocket: () => ({
+        readyState: 3,
+        send: () => undefined,
+        close: () => undefined,
+        onopen: null,
+        onmessage: null,
+        onerror: null,
+        onclose: null,
+      }),
+      wsConnectTimeoutMs: 10,
       pollBaseDelayMs: 10,
       pollMaxDelayMs: 20,
     });
@@ -584,5 +594,137 @@ describe("Ticket 02 — Public /api/demo/* (3-Act Flow, Input Defense, Circular 
 
     assert.deepEqual(dispatchOrder, ["agent-high", "demo-1", "demo-2"]);
     assert.equal(sem.getStats().activeProves, 0);
+  });
+
+  it("rejects unmutated proofs on /api/demo/tamper, inherits active sandbox epoch, signs /agent 413/non-ASCII 401, and stops finality polling on timeout", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rr-review-reg-"));
+    const dbPath = path.join(dir, "reg.db");
+    let tamperSubmits = 0;
+    let pollHits = 0;
+
+    const kurierClient = new KurierClient({
+      apiKey: FAKE_KURIER_KEY,
+      fetchImpl: async (input) => {
+        const u = typeof input === "string" ? input : input.toString();
+        if (u.includes("/submit-proof/")) {
+          tamperSubmits += 1;
+          return new Response(JSON.stringify({ jobId: "job-t", optimisticVerify: "failed" }), { status: 422 });
+        }
+        pollHits += 1;
+        return new Response(JSON.stringify({ jobId: "job-stuck", status: "Queued" }), { status: 200 });
+      },
+      createWebSocket: () => ({
+        readyState: 3,
+        send: () => undefined,
+        close: () => undefined,
+        onopen: null,
+        onmessage: null,
+        onerror: null,
+        onclose: null,
+      }),
+      wsConnectTimeoutMs: 5,
+      pollBaseDelayMs: 15,
+      pollMaxDelayMs: 15,
+    });
+
+    const srv = await createReserveRailServer({
+      dbPath,
+      agentHmacSecret: PRIMARY_HMAC,
+      kurierClient,
+    });
+
+    try {
+      await srv.listen(0, "127.0.0.1");
+
+      // 1. Untampered baseline cassette amount ("15000") must be rejected with 400 and 0 Kurier calls
+      const unmutatedRes = await fetch(`${srv.url}/api/demo/tamper`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tamperedAmount: "15000" }),
+      });
+      assert.equal(unmutatedRes.status, 400);
+      assert.equal(tamperSubmits, 0);
+
+      // 2. Non-decimal signal in /api/demo/tamper returns 400 (not 500)
+      const badSigRes = await fetch(`${srv.url}/api/demo/tamper`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          receipt: {
+            proof: srv.service.cassette.validTransition.proof,
+            publicSignalsArray: ["0", "0", "0", "0", "12.5", "1", "0"],
+          },
+        }),
+      });
+      assert.equal(badSigRes.status, 400);
+
+      // 3. Omitted epoch after reset to epoch=2 uses active sandbox epoch=2 instead of hardcoding 1
+      await fetch(`${srv.url}/api/demo/reset`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sandboxId: "sbx_ep2", epoch: 2 }),
+      });
+      const ep2Propose = await fetch(`${srv.url}/api/demo/propose`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sandboxId: "sbx_ep2",
+          recipient: "AWS",
+          amount: "1000",
+          mode: "DETERMINISTIC_REPLAY",
+        }),
+      });
+      assert.equal(ep2Propose.status, 200);
+      const ep2Json = (await ep2Propose.json()) as {
+        readonly intent: { readonly epoch: string };
+        readonly reserveRailResult: { readonly approved: boolean };
+      };
+      assert.equal(ep2Json.intent.epoch, "2");
+      assert.equal(ep2Json.reserveRailResult.approved, true);
+
+      // 4. Oversized /agent POST returns 413 signed with x-agent-games-signature
+      const oversized = await fetch(`${srv.url}/agent`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pad: "a".repeat(20_000) }),
+      });
+      assert.equal(oversized.status, 413);
+      const oversizedText = await oversized.text();
+      assert.equal(
+        verifyResponseHmac(oversizedText, oversized.headers.get("x-agent-games-signature") ?? undefined, PRIMARY_HMAC),
+        true,
+      );
+
+      // 5. High-byte 64-char signature header returns signed 401 (never unsigned 500)
+      const highByteRes = await fetch(`${srv.url}/agent`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-agent-games-signature": "é".repeat(64),
+        },
+        body: '{"type":"agent-games.preflight.v1"}',
+      });
+      assert.equal(highByteRes.status, 401);
+      const highByteText = await highByteRes.text();
+      assert.equal(
+        verifyResponseHmac(highByteText, highByteRes.headers.get("x-agent-games-signature") ?? undefined, PRIMARY_HMAC),
+        true,
+      );
+
+      // 6. waitForJobFinality stops background REST polling after timeoutMs
+      await assert.rejects(
+        () => kurierClient.waitForJobFinality("job-stuck", { timeoutMs: 40, preferWebSocket: false }),
+        (err: unknown) =>
+          err instanceof Error &&
+          "code" in err &&
+          (err as { readonly code?: unknown }).code === "FINALITY_TIMEOUT",
+      );
+      const hitsAtTimeout = pollHits;
+      await new Promise((r) => setTimeout(r, 80));
+      assert.equal(pollHits <= hitsAtTimeout + 1, true, "Background polling must stop once activeWaiters hits 0");
+    } finally {
+      await srv.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

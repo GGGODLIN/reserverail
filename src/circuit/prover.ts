@@ -314,7 +314,13 @@ function serializeScalarForSnarkJs(
   raw: number | bigint | string,
   fieldName: string,
 ): string {
-  const value = typeof raw === "bigint" ? raw : BigInt(raw);
+  if (typeof raw === "string" && !/^(0|[1-9][0-9]*)$/.test(raw.trim())) {
+    throw new RangeError(`Circuit signal "${fieldName}" must be a non-negative decimal integer`);
+  }
+  if (typeof raw === "number" && (!Number.isFinite(raw) || !Number.isInteger(raw) || raw < 0)) {
+    throw new RangeError(`Circuit signal "${fieldName}" must be a non-negative integer`);
+  }
+  const value = typeof raw === "bigint" ? raw : BigInt(typeof raw === "string" ? raw.trim() : raw);
   // Reject negative values before circom_runtime normalizes -x to p - x.
   if (value < 0n || value >= BN128_SCALAR_FIELD) {
     throw new RangeError(`Circuit signal "${fieldName}" outside [0, p)`);
@@ -355,7 +361,7 @@ function serializeRawCircuitInput(
 export async function calculateTransitionWitness(
   circuitInput: ReserveRailRawCircuitInput,
 ): Promise<ReserveRailPublicSignals> {
-  const wasmBytes = new Uint8Array(fs.readFileSync(DEFAULT_WASM_PATH));
+  const wasmBytes = new Uint8Array(await fs.promises.readFile(DEFAULT_WASM_PATH));
   const serialized = serializeRawCircuitInput(circuitInput);
   const wtnsMem: { type: "mem"; data?: Uint8Array } = { type: "mem" };
 
@@ -373,7 +379,7 @@ export async function proveTransition(
     throw new RangeError(`Policy transition rejected: ${evaluation.reasonCode}`);
   }
 
-  const wasmBytes = new Uint8Array(fs.readFileSync(DEFAULT_WASM_PATH));
+  const wasmBytes = new Uint8Array(await fs.promises.readFile(DEFAULT_WASM_PATH));
   const serialized = serializeRawCircuitInput(evaluation.circuitInput);
 
   const { proof, publicSignals } = await snarkjs.groth16.fullProve(

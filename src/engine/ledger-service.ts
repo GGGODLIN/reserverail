@@ -50,6 +50,7 @@ export interface TreasuryLedgerServiceOptions {
   readonly store: ReserveRailStore;
   readonly semaphore: ProvingSemaphore;
   readonly kurierClient?: KurierClient | null;
+  readonly scrubKey?: string;
   readonly cassette?: BaselineMainnetCassette;
   readonly submitMaxRetries?: number;
   readonly submitRetryDelayMs?: number;
@@ -163,6 +164,7 @@ export class TreasuryLedgerService {
   private readonly store: ReserveRailStore;
   private readonly semaphore: ProvingSemaphore;
   private readonly kurierClient: KurierClient | null;
+  private readonly scrubKey: string | undefined;
   public readonly cassette: BaselineMainnetCassette;
   private readonly submitMaxRetries: number;
   private readonly submitRetryDelayMs: number;
@@ -171,12 +173,14 @@ export class TreasuryLedgerService {
   private readonly leaseNotifier = new LeaseReleaseNotifier();
   private readonly pendingFinalityTasks = new Map<string, Promise<void>>();
   private readonly activeExecutions = new Set<Promise<ExecuteTransitionResult>>();
+  private readonly liveTamperTimestamps: number[] = [];
   private closed = false;
 
   public constructor(options: TreasuryLedgerServiceOptions) {
     this.store = options.store;
     this.semaphore = options.semaphore;
     this.kurierClient = options.kurierClient ?? null;
+    this.scrubKey = options.scrubKey;
     this.cassette = options.cassette ?? loadBaselineMainnetCassette();
     this.submitMaxRetries = options.submitMaxRetries ?? 2;
     this.submitRetryDelayMs = options.submitRetryDelayMs ?? 150;
@@ -667,7 +671,7 @@ export class TreasuryLedgerService {
             : isTransient
               ? "KURIER_TRANSIENT_UNAVAILABLE"
               : "EXECUTION_FAILED",
-          errorMessage: scrubKurierText(rawMsg),
+          errorMessage: scrubKurierText(rawMsg, this.scrubKey),
           staleProvesAttempted: 0,
           reEvaluatedAfterLease,
         };
@@ -694,6 +698,18 @@ export class TreasuryLedgerService {
     const sourceSignals =
       params?.publicSignalsArray ?? this.cassette.validTransition.publicSignalsArray;
 
+    if (sourceSignals.length !== 7) {
+      throw new RangeError("Tamper publicSignalsArray must contain exactly 7 decimal field elements");
+    }
+    for (const s of sourceSignals) {
+      if (!/^(0|[1-9][0-9]*)$/.test(s)) {
+        throw new RangeError("Tamper publicSignalsArray elements must be non-negative decimal integers");
+      }
+    }
+    if (params?.tamperedAmount !== undefined && !/^(0|[1-9][0-9]*)$/.test(params.tamperedAmount)) {
+      throw new RangeError("tamperedAmount must be a non-negative decimal integer");
+    }
+
     const mutatedSignals = [...sourceSignals];
     const currentAmt = BigInt(mutatedSignals[4] ?? "0");
     mutatedSignals[4] =
@@ -705,18 +721,37 @@ export class TreasuryLedgerService {
       VERIFICATION_KEY,
     );
 
+    // Never allow unauthenticated callers to use /api/demo/tamper as a free relay for valid proofs.
+    if (localVerified) {
+      throw new RangeError("Tamper check requires a mutated proof that fails local Groth16 verification");
+    }
+
     if (this.kurierClient === null) {
       return {
         localVerified,
         kurierAttempted: false,
         kurierRejected: null,
-        optimisticVerify: localVerified ? "unexpected_pass" : "local_only_failed",
-        reason: localVerified
-          ? "Unexpected local pass"
-          : "Local Groth16 verification failed on tampered publicSignals (KURIER_API_KEY unset)",
+        optimisticVerify: "local_only_failed",
+        reason: "Local Groth16 verification failed on tampered publicSignals (KURIER_API_KEY unset)",
         tamperedPublicSignals: mutatedSignals,
       };
     }
+
+    const now = Date.now();
+    while (this.liveTamperTimestamps.length > 0 && now - (this.liveTamperTimestamps[0] ?? 0) > 60_000) {
+      this.liveTamperTimestamps.shift();
+    }
+    if (this.liveTamperTimestamps.length >= 6) {
+      return {
+        localVerified,
+        kurierAttempted: false,
+        kurierRejected: null,
+        optimisticVerify: "rate_limited",
+        reason: "Live Kurier tamper probe throttled (<= 6/min); local Groth16 verification already rejected",
+        tamperedPublicSignals: mutatedSignals,
+      };
+    }
+    this.liveTamperTimestamps.push(now);
 
     try {
       const submitRes = await this.kurierClient.submitProof({
@@ -769,7 +804,7 @@ export class TreasuryLedgerService {
         kurierAttempted: true,
         kurierRejected: null,
         optimisticVerify: "error",
-        reason: scrubKurierText(msg),
+        reason: scrubKurierText(msg, this.scrubKey),
         tamperedPublicSignals: mutatedSignals,
       };
     }

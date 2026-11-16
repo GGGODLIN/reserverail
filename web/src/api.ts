@@ -18,6 +18,9 @@ async function readJson<T>(response: Response): Promise<T> {
         : `HTTP ${response.status}`;
     throw new Error(message);
   }
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new Error("Invalid JSON response from server");
+  }
   return body as T;
 }
 

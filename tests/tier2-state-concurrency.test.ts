@@ -53,6 +53,16 @@ describe("Tier 2 Bounded State-Transition & Concurrency Inspection", () => {
       },
       pollBaseDelayMs: 25,
       pollMaxDelayMs: 50,
+      wsConnectTimeoutMs: 10,
+      createWebSocket: () => ({
+        readyState: 3,
+        send: () => undefined,
+        close: () => undefined,
+        onopen: null,
+        onmessage: null,
+        onerror: null,
+        onclose: null,
+      }),
     });
 
     const srv = await createReserveRailServer({

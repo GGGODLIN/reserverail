@@ -123,7 +123,7 @@ function circuitPreview(cfo: CfoView | null, amount: string): { readonly text: s
     return { text: "Circuit preview: waiting for the CFO private witness…", tone: "muted" };
   }
   const trimmed = amount.trim();
-  if (!/^[0-9]+$/.test(trimmed)) {
+  if (!/^(0|[1-9][0-9]*)$/.test(trimmed) || BigInt(trimmed) > (1n << 64n) - 1n) {
     return { text: "Circuit preview: enter a whole-number amount to see which bound it meets.", tone: "muted" };
   }
   switch (previewCircuitOutcome(cfo, BigInt(trimmed))) {

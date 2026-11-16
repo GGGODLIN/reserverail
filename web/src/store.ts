@@ -83,7 +83,7 @@ const POLL_INTERVAL_MS = 700;
 const NO_VERIFICATION: VerificationResults = { running: null, groth16: null, chain: null, tamper: null };
 
 function sandboxFromLocation(): string | null {
-  return new URLSearchParams(window.location.search).get("sandbox");
+  return optional(new URLSearchParams(window.location.search).get("sandbox") ?? "") ?? null;
 }
 
 function sandboxUrl(sandboxId: string): string {
@@ -144,10 +144,12 @@ function tamperServerLines(server: TamperResponse | Error, relayMode: RelayMode)
     return [`Server: unavailable (${server.message})`];
   }
   const kurier = !server.kurierAttempted
-    ? `Kurier Mainnet: not attempted (${relayMode})`
+    ? `Kurier Mainnet: not attempted (${relayMode === "LIVE" ? server.optimisticVerify : relayMode})`
     : server.kurierRejected === true
       ? `Kurier Mainnet: REJECTED (optimisticVerify: ${server.optimisticVerify})`
-      : "Kurier Mainnet: ACCEPTED (unexpected)";
+      : server.kurierRejected === null
+        ? `Kurier Mainnet: unavailable (${server.reason})`
+        : "Kurier Mainnet: ACCEPTED (unexpected)";
   return [`Server local verify: ${server.localVerified ? "PASSED (unexpected)" : "FAILED"}`, kurier];
 }
 
@@ -291,7 +293,7 @@ export function createWorkbenchStore(): WorkbenchStore {
     if (snapshot === null) {
       return;
     }
-    if (requested === null) {
+    if (requested !== snapshot.sandboxId) {
       window.history.replaceState(null, "", sandboxUrl(snapshot.sandboxId));
     }
     commit({
@@ -432,7 +434,15 @@ export function createWorkbenchStore(): WorkbenchStore {
     },
 
     selectReceipt(receiptId) {
-      commit({ ...state, selectedReceiptId: receiptId });
+      const clearRunning =
+        state.verification.running === "groth16" || state.verification.running === "tamper"
+          ? null
+          : state.verification.running;
+      commit({
+        ...state,
+        selectedReceiptId: receiptId,
+        verification: { ...state.verification, running: clearRunning, groth16: null, tamper: null },
+      });
     },
 
     updateDraft(patch) {
@@ -451,14 +461,24 @@ export function createWorkbenchStore(): WorkbenchStore {
         announcement: "Verifying the Groth16 proof in this browser…",
       });
       const started = performance.now();
-      const { verifyTransitionProof } = await import("./zero-trust.ts");
-      const valid = await verifyTransitionProof(receipt.proof, receipt.publicSignalsArray).catch(() => false);
-      // A Reset, scope switch or new run cleared `running`; this verdict would describe a receipt no longer shown.
-      if (!isCurrentScope(state.view, ticket) || state.verification.running !== "groth16") {
-        return;
+      try {
+        const { verifyTransitionProof } = await import("./zero-trust.ts");
+        const valid = await verifyTransitionProof(receipt.proof, receipt.publicSignalsArray).catch(() => false);
+        if (
+          !isCurrentScope(state.view, ticket) ||
+          state.verification.running !== "groth16" ||
+          selectedReceipt(state)?.receiptId !== receipt.receiptId
+        ) {
+          return;
+        }
+        const line = `Groth16 proof: ${valid ? "VALID" : "INVALID"} · receipt ${commitmentLabel(receipt.seq)} · checked in this browser in ${Math.round(performance.now() - started)} ms`;
+        commit({ ...state, verification: { ...state.verification, running: null, groth16: line }, announcement: line });
+      } catch (error: unknown) {
+        if (isCurrentScope(state.view, ticket) && state.verification.running === "groth16") {
+          const line = `Groth16 proof check failed to load: ${messageOf(error)}`;
+          commit({ ...state, verification: { ...state.verification, running: null, groth16: line }, announcement: line });
+        }
       }
-      const line = `Groth16 proof: ${valid ? "VALID" : "INVALID"} · receipt ${commitmentLabel(receipt.seq)} · checked in this browser in ${Math.round(performance.now() - started)} ms`;
-      commit({ ...state, verification: { ...state.verification, running: null, groth16: line }, announcement: line });
     },
 
     async verifyChain() {
@@ -472,19 +492,26 @@ export function createWorkbenchStore(): WorkbenchStore {
         verification: { ...state.verification, running: "chain" },
         announcement: "Verifying the Audit Chain in this browser…",
       });
-      const { verifyAuditChain } = await import("./zero-trust.ts");
-      const result = await verifyAuditChain(
-        snapshot.receipts,
-        snapshot.auditorView.genesisCommitment,
-        snapshot.auditorView.policyRoot,
-      );
-      if (!isCurrentScope(state.view, ticket) || state.verification.running !== "chain") {
-        return;
+      try {
+        const { verifyAuditChain } = await import("./zero-trust.ts");
+        const result = await verifyAuditChain(
+          snapshot.receipts,
+          snapshot.auditorView.genesisCommitment,
+          snapshot.auditorView.policyRoot,
+        );
+        if (!isCurrentScope(state.view, ticket) || state.verification.running !== "chain") {
+          return;
+        }
+        const line = result.valid
+          ? `Audit chain: VALID · ${result.count} receipt${result.count === 1 ? "" : "s"} · C₀ → ${commitmentLabel(result.count)} · checked in this browser`
+          : `Audit chain: INVALID · ${result.reasonCode ?? "UNKNOWN"} · checked in this browser`;
+        commit({ ...state, verification: { ...state.verification, running: null, chain: line }, announcement: line });
+      } catch (error: unknown) {
+        if (isCurrentScope(state.view, ticket) && state.verification.running === "chain") {
+          const line = `Audit chain check failed to load: ${messageOf(error)}`;
+          commit({ ...state, verification: { ...state.verification, running: null, chain: line }, announcement: line });
+        }
       }
-      const line = result.valid
-        ? `Audit chain: VALID · ${result.count} receipt${result.count === 1 ? "" : "s"} · C₀ → ${commitmentLabel(result.count)} · checked in this browser`
-        : `Audit chain: INVALID · ${result.reasonCode ?? "UNKNOWN"} · checked in this browser`;
-      commit({ ...state, verification: { ...state.verification, running: null, chain: line }, announcement: line });
     },
 
     async tamperSelected() {
@@ -502,30 +529,45 @@ export function createWorkbenchStore(): WorkbenchStore {
       });
       const tamperedAmount = (BigInt(receipt.publicSignals.amount) + 1n).toString(10);
       const forged = withTamperedAmount(receipt, tamperedAmount);
-      const { verifyAuditChain, verifyTransitionProof } = await import("./zero-trust.ts");
-      const [server, browserValid, chain] = await Promise.all([
-        sendTamperedReceipt(receipt, tamperedAmount, signal).catch((error: unknown) => new Error(messageOf(error))),
-        verifyTransitionProof(forged.proof, forged.publicSignalsArray).catch(() => false),
-        verifyAuditChain(
-          snapshot.receipts.map((candidate) => (candidate.receiptId === receipt.receiptId ? forged : candidate)),
-          snapshot.auditorView.genesisCommitment,
-          snapshot.auditorView.policyRoot,
-        ),
-      ]);
-      if (!isCurrentScope(state.view, ticket) || state.verification.running !== "tamper") {
-        return;
+      try {
+        const { verifyAuditChain, verifyTransitionProof } = await import("./zero-trust.ts");
+        const [server, browserValid, chain] = await Promise.all([
+          sendTamperedReceipt(receipt, tamperedAmount, signal).catch((error: unknown) => new Error(messageOf(error))),
+          verifyTransitionProof(forged.proof, forged.publicSignalsArray).catch(() => false),
+          verifyAuditChain(
+            snapshot.receipts.map((candidate) => (candidate.receiptId === receipt.receiptId ? forged : candidate)),
+            snapshot.auditorView.genesisCommitment,
+            snapshot.auditorView.policyRoot,
+          ),
+        ]);
+        if (
+          !isCurrentScope(state.view, ticket) ||
+          state.verification.running !== "tamper" ||
+          selectedReceipt(state)?.receiptId !== receipt.receiptId
+        ) {
+          return;
+        }
+        const lines = [
+          `Amount ${receipt.publicSignals.amount} → ${tamperedAmount} on receipt ${commitmentLabel(receipt.seq)}`,
+          `This browser: ${browserValid ? "VALID (unexpected)" : "INVALID — the proof no longer matches its public signals"}`,
+          ...tamperServerLines(server, snapshot.relayMode),
+          `Audit chain with the tampered receipt: ${chain.valid ? "VALID (unexpected)" : `INVALID · ${chain.reasonCode ?? "UNKNOWN"}`}`,
+        ];
+        commit({
+          ...state,
+          verification: { ...state.verification, running: null, tamper: lines },
+          announcement: `Tamper test finished: ${lines.slice(1).join("; ")}.`,
+        });
+      } catch (error: unknown) {
+        if (isCurrentScope(state.view, ticket) && state.verification.running === "tamper") {
+          const line = `Tamper test failed to load: ${messageOf(error)}`;
+          commit({
+            ...state,
+            verification: { ...state.verification, running: null, tamper: [line] },
+            announcement: line,
+          });
+        }
       }
-      const lines = [
-        `Amount ${receipt.publicSignals.amount} → ${tamperedAmount} on receipt ${commitmentLabel(receipt.seq)}`,
-        `This browser: ${browserValid ? "VALID (unexpected)" : "INVALID — the proof no longer matches its public signals"}`,
-        ...tamperServerLines(server, snapshot.relayMode),
-        `Audit chain with the tampered receipt: ${chain.valid ? "VALID (unexpected)" : `INVALID · ${chain.reasonCode ?? "UNKNOWN"}`}`,
-      ];
-      commit({
-        ...state,
-        verification: { ...state.verification, running: null, tamper: lines },
-        announcement: `Tamper test finished: ${lines.slice(1).join("; ")}.`,
-      });
     },
 
     downloadProofBundle() {

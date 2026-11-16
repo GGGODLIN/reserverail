@@ -37,10 +37,10 @@ function computeHmacHex(raw: Buffer | string, secret: string): string {
 
 function constantTimeHexEquals(providedRaw: string, expectedHex: string): boolean {
   const clean = providedRaw.replace(/^sha256=/i, "").trim().toLowerCase();
-  if (clean.length !== expectedHex.length) {
+  if (!/^[0-9a-f]{64}$/.test(clean) || clean.length !== expectedHex.length) {
     return false;
   }
-  return crypto.timingSafeEqual(Buffer.from(clean, "utf8"), Buffer.from(expectedHex, "utf8"));
+  return crypto.timingSafeEqual(Buffer.from(clean, "hex"), Buffer.from(expectedHex, "hex"));
 }
 
 function verifyInboundSignature(
@@ -358,6 +358,7 @@ export class AgentEndpointHandler {
           llmFetchImpl: this.config.llmFetchImpl,
           llmTimeoutMs: this.config.llmTimeoutMs,
           clientIp: "agent",
+          defaultEpoch: BigInt(sbx.currentEpoch),
         },
       );
 

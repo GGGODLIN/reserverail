@@ -254,6 +254,8 @@ function parseJobStatusPayload(
 interface SharedFinalityTracker {
   readonly promise: Promise<KurierJobStatus>;
   readonly stageCallbacks: Set<(status: KurierJobStatus) => void>;
+  activeWaiters: number;
+  stop: () => void;
   lastSignature: string;
 }
 
@@ -813,7 +815,11 @@ export class KurierClient {
     }
 
     const stageCallbacks = new Set<(status: KurierJobStatus) => void>();
-    const trackerRef: { lastSignature: string } = { lastSignature: "" };
+    const trackerRef: { lastSignature: string; stopped: boolean; wake: (() => void) | null } = {
+      lastSignature: "",
+      stopped: false,
+      wake: null,
+    };
 
     const notifyStage = (status: KurierJobStatus): void => {
       const sig = `${status.status}:${status.txHash ?? ""}:${status.blockHash ?? ""}`;
@@ -828,13 +834,12 @@ export class KurierClient {
 
     const promise = (async (): Promise<KurierJobStatus> => {
       let resolvedTerminal: KurierJobStatus | null = null;
-      let wakeLoop: (() => void) | null = null;
 
       const onWsUpdate = (status: KurierJobStatus): void => {
         notifyStage(status);
         if (status.status === "Finalized" || status.status === "Failed") {
           resolvedTerminal = status;
-          wakeLoop?.();
+          trackerRef.wake?.();
         }
       };
 
@@ -849,7 +854,7 @@ export class KurierClient {
         const wsReady = preferWebSocket ? await this.ensureWebSocketSubscribed() : false;
         let attempt = 0;
 
-        while (!this.closed) {
+        while (!this.closed && !trackerRef.stopped) {
           if (resolvedTerminal !== null) {
             break;
           }
@@ -857,14 +862,17 @@ export class KurierClient {
           if (wsReady && attempt === 0) {
             const initialGraceMs = Math.min(this.pollMaxDelayMs, Math.max(this.pollBaseDelayMs, 250));
             await new Promise<void>((resolve) => {
-              wakeLoop = resolve;
               const t = setTimeout(() => {
-                wakeLoop = null;
+                trackerRef.wake = null;
                 resolve();
               }, initialGraceMs);
-              t.unref?.();
+              trackerRef.wake = () => {
+                clearTimeout(t);
+                trackerRef.wake = null;
+                resolve();
+              };
             });
-            if (resolvedTerminal !== null || this.closed) {
+            if (resolvedTerminal !== null || this.closed || trackerRef.stopped) {
               break;
             }
           }
@@ -885,19 +893,22 @@ export class KurierClient {
           const delayMs = Math.min(this.pollBaseDelayMs * 2 ** attempt, this.pollMaxDelayMs);
           attempt += 1;
           await new Promise<void>((resolve) => {
-            wakeLoop = resolve;
             const t = setTimeout(() => {
-              wakeLoop = null;
+              trackerRef.wake = null;
               resolve();
             }, delayMs);
-            t.unref?.();
+            trackerRef.wake = () => {
+              clearTimeout(t);
+              trackerRef.wake = null;
+              resolve();
+            };
           });
         }
 
         const terminal = resolvedTerminal as KurierJobStatus | null;
         if (terminal === null) {
-          throw new KurierError(`Kurier client closed while waiting for job ${safeJobId}`, {
-            retryable: false,
+          throw new KurierError(`Kurier finality tracking stopped while waiting for job ${safeJobId}`, {
+            retryable: !this.closed,
             apiKeyForScrub: this.apiKey,
           });
         }
@@ -919,10 +930,17 @@ export class KurierClient {
         this.sharedFinalityTrackers.delete(safeJobId);
       }
     })();
+    promise.catch(() => undefined);
 
     const tracker: SharedFinalityTracker = {
       promise,
       stageCallbacks,
+      activeWaiters: 0,
+      stop: () => {
+        trackerRef.stopped = true;
+        this.sharedFinalityTrackers.delete(safeJobId);
+        trackerRef.wake?.();
+      },
       get lastSignature(): string {
         return trackerRef.lastSignature;
       },
@@ -942,6 +960,7 @@ export class KurierClient {
     const timeoutMs = options?.timeoutMs ?? 90_000;
     const preferWebSocket = options?.preferWebSocket ?? true;
     const tracker = this.ensureSharedFinalityTracker(safeJobId, preferWebSocket);
+    tracker.activeWaiters += 1;
 
     const onStageChange = options?.onStageChange;
     if (onStageChange !== undefined) {
@@ -959,7 +978,6 @@ export class KurierClient {
           }),
         );
       }, timeoutMs);
-      timeoutHandle.unref?.();
     });
 
     try {
@@ -971,11 +989,18 @@ export class KurierClient {
       if (onStageChange !== undefined) {
         tracker.stageCallbacks.delete(onStageChange);
       }
+      tracker.activeWaiters -= 1;
+      if (tracker.activeWaiters <= 0) {
+        tracker.stop();
+      }
     }
   }
 
   public async close(): Promise<void> {
     this.closed = true;
+    for (const tracker of [...this.sharedFinalityTrackers.values()]) {
+      tracker.stop();
+    }
     this.clearWsTimers();
     const sock = this.activeSocket;
     this.activeSocket = null;

@@ -45,6 +45,7 @@ export interface ParseIntentOptions {
   readonly llmFetchImpl?: typeof globalThis.fetch;
   readonly llmTimeoutMs?: number;
   readonly clientIp?: string;
+  readonly defaultEpoch?: bigint;
 }
 
 interface SerializedIntentCacheEntry {
@@ -73,10 +74,24 @@ const LLM_MAX_PER_IP_PER_MIN = 8;
 
 function checkAndRecordLlmRateLimit(ip: string): boolean {
   const now = Date.now();
+  if (llmIpWindow.size > 4_096) {
+    for (const [k, tsList] of llmIpWindow) {
+      const kept = tsList.filter((ts) => now - ts <= LLM_RATE_WINDOW_MS);
+      if (kept.length === 0) {
+        llmIpWindow.delete(k);
+      } else {
+        llmIpWindow.set(k, kept);
+      }
+    }
+  }
   const ipTimestamps = llmIpWindow.get(ip) ?? [];
   const freshIp = ipTimestamps.filter((ts) => now - ts <= LLM_RATE_WINDOW_MS);
   if (freshIp.length >= LLM_MAX_PER_IP_PER_MIN) {
-    llmIpWindow.set(ip, freshIp);
+    if (freshIp.length === 0) {
+      llmIpWindow.delete(ip);
+    } else {
+      llmIpWindow.set(ip, freshIp);
+    }
     return false;
   }
   freshIp.push(now);
@@ -147,7 +162,8 @@ function resolveVendor(
 
   if (memo !== undefined) {
     for (const v of allowlist) {
-      const re = new RegExp(`\\b${v.name}\\b`, "i");
+      const escapedName = v.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const re = new RegExp(`\\b${escapedName}\\b`, "i");
       if (re.test(memo)) {
         return { vendorName: v.name, recipientAddress: v.address };
       }
@@ -199,16 +215,21 @@ const PRESET_INTENTS: Readonly<Record<string, Omit<RawProposalInput, "actId">>> 
   },
 };
 
-function normalizeMemoForCache(raw: RawProposalInput): string {
+function normalizeMemoForCache(
+  raw: RawProposalInput,
+  allowlist: readonly AllowlistVendor[],
+): string {
   const normalizedMemo = (raw.memo ?? "").trim().replace(/\s+/g, " ").toLowerCase();
   const normalizedRecipient = (raw.recipient ?? "").trim().toLowerCase();
   const normalizedAmt = raw.amount !== undefined ? String(raw.amount).trim() : "";
   const normalizedEpoch = raw.epoch !== undefined ? String(raw.epoch).trim() : "";
+  const allowlistKey = allowlist.map((v) => `${v.name.toLowerCase()}:${v.address.toLowerCase()}`);
   const keyPayload = JSON.stringify({
     m: normalizedMemo,
     r: normalizedRecipient,
     a: normalizedAmt,
     e: normalizedEpoch,
+    al: allowlistKey,
   });
   return crypto.createHash("sha256").update(keyPayload, "utf8").digest("hex");
 }
@@ -346,30 +367,36 @@ export async function parsePaymentIntent(
     effectiveInput.amount !== undefined
       ? parseStrictNonNegativeUint64(effectiveInput.amount, "amount")
       : null;
+  const fallbackEpoch = options.defaultEpoch ?? 1n;
+  if (fallbackEpoch === 0n) {
+    throw new RangeError('Field "epoch" must be >= 1');
+  }
   const explicitEpoch =
     effectiveInput.epoch !== undefined
       ? parseStrictNonNegativeUint64(effectiveInput.epoch, "epoch")
-      : 1n;
+      : null;
   if (explicitEpoch === 0n) {
     throw new RangeError('Field "epoch" must be >= 1');
   }
 
-  const invoiceId =
+  const explicitInvoiceId =
     effectiveInput.invoiceId !== undefined && effectiveInput.invoiceId.trim().length > 0
       ? effectiveInput.invoiceId.trim()
-      : `inv-${crypto.randomUUID().slice(0, 12)}`;
+      : null;
+  const generatedInvoiceId = `inv-${crypto.randomUUID().slice(0, 12)}`;
 
   // 1. Preset 0-token path
   if (preset !== undefined && effectiveInput.memo === preset.memo) {
     const resolved = resolveVendor(effectiveInput.recipient, effectiveInput.memo, allowlist);
     const amount = explicitAmount ?? parseStrictNonNegativeUint64(preset.amount ?? 0, "amount");
     const recipientField = stringToFieldElement(resolved.recipientAddress);
+    const invoiceId = explicitInvoiceId ?? generatedInvoiceId;
     return {
       vendorName: resolved.vendorName,
       recipientAddress: resolved.recipientAddress,
       recipientField,
       amount,
-      epoch: explicitEpoch,
+      epoch: explicitEpoch ?? fallbackEpoch,
       invoiceId,
       invoiceIdField: stringToFieldElement(invoiceId),
       memo: effectiveInput.memo ?? null,
@@ -379,17 +406,18 @@ export async function parsePaymentIntent(
   }
 
   // 2. Normalized memo cache path (0 LLM tokens)
-  const cacheKey = normalizeMemoForCache(effectiveInput);
+  const cacheKey = normalizeMemoForCache(effectiveInput, allowlist);
   if (effectiveInput.memo !== undefined && options.store !== undefined) {
     const cachedRaw = options.store.getCachedIntent(cacheKey);
     if (cachedRaw !== null) {
       const cached = JSON.parse(cachedRaw) as SerializedIntentCacheEntry;
+      const invoiceId = explicitInvoiceId ?? generatedInvoiceId;
       return {
         vendorName: cached.vendorName,
         recipientAddress: cached.recipientAddress,
         recipientField: BigInt(cached.recipientField),
         amount: explicitAmount ?? BigInt(cached.amount),
-        epoch: explicitEpoch,
+        epoch: explicitEpoch ?? fallbackEpoch,
         invoiceId,
         invoiceIdField: stringToFieldElement(invoiceId),
         memo: effectiveInput.memo,
@@ -405,12 +433,13 @@ export async function parsePaymentIntent(
       throw new RangeError('Field "amount" is required when memo is absent');
     }
     const resolved = resolveVendor(effectiveInput.recipient, undefined, allowlist);
+    const invoiceId = explicitInvoiceId ?? generatedInvoiceId;
     return {
       vendorName: resolved.vendorName,
       recipientAddress: resolved.recipientAddress,
       recipientField: stringToFieldElement(resolved.recipientAddress),
       amount: explicitAmount,
-      epoch: explicitEpoch,
+      epoch: explicitEpoch ?? fallbackEpoch,
       invoiceId,
       invoiceIdField: stringToFieldElement(invoiceId),
       memo: null,
@@ -441,6 +470,8 @@ export async function parsePaymentIntent(
   let finalVendorName: string;
   let finalRecipientAddr: string;
   let finalAmount: bigint;
+  let finalEpoch: bigint = explicitEpoch ?? fallbackEpoch;
+  let finalInvoiceId: string = explicitInvoiceId ?? generatedInvoiceId;
   let parserSource: ProposedPaymentIntent["parserSource"];
   let llmTokensUsed = 0;
 
@@ -453,6 +484,15 @@ export async function parsePaymentIntent(
     finalVendorName = resolved.vendorName;
     finalRecipientAddr = resolved.recipientAddress;
     finalAmount = explicitAmount ?? parseStrictNonNegativeUint64(llmRes.parsed.amount, "amount");
+    if (explicitEpoch === null && llmRes.parsed.epoch !== undefined) {
+      finalEpoch = parseStrictNonNegativeUint64(llmRes.parsed.epoch, "epoch");
+    }
+    if (explicitInvoiceId === null && llmRes.parsed.invoiceId !== undefined) {
+      const trimmedId = llmRes.parsed.invoiceId.trim();
+      if (trimmedId.length > 0) {
+        finalInvoiceId = trimmedId;
+      }
+    }
     parserSource = llmRes.source;
     llmTokensUsed = 120;
   } else {
@@ -479,9 +519,9 @@ export async function parsePaymentIntent(
     recipientAddress: finalRecipientAddr,
     recipientField: stringToFieldElement(finalRecipientAddr),
     amount: finalAmount,
-    epoch: explicitEpoch,
-    invoiceId,
-    invoiceIdField: stringToFieldElement(invoiceId),
+    epoch: finalEpoch,
+    invoiceId: finalInvoiceId,
+    invoiceIdField: stringToFieldElement(finalInvoiceId),
     memo: effectiveInput.memo,
     parserSource,
     llmTokensUsed,
