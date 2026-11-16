@@ -10,10 +10,12 @@
   },
   "scripts": {
     "start": "npm run build:web && node --experimental-strip-types src/server/start.ts",
+    "start:prod": "node --experimental-strip-types src/server/start.ts",
     "build:web": "vite build --config web/vite.config.ts",
     "build:circuit": "node --experimental-strip-types scripts/build-circuit.ts",
     "probe:kurier": "node --experimental-strip-types scripts/kurier-live-probe.ts",
     "diag": "node --experimental-strip-types scripts/diag.ts",
+    "verify:live": "node --experimental-strip-types scripts/verify-live-production.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p web/tsconfig.json",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "test:e2e": "npm run build:web && E2E_TELEMETRY_DISABLED=1 DO_NOT_TRACK=1 e2e run --target replay --output .e2e/replay tests/e2e/replay && E2E_TELEMETRY_DISABLED=1 DO_NOT_TRACK=1 e2e run --target live-sim --output .e2e/live-sim tests/e2e/live-sim"

@@ -1,0 +1,14 @@
+[Unit]
+Description=Dedicated Cloudflare Tunnel for ReserveRail (isolated from default cloudflared.service)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+TimeoutStartSec=15
+Type=notify
+ExecStart=/usr/bin/cloudflared --no-autoupdate --metrics 127.0.0.1:20242 --config /etc/cloudflared-reserverail/config.yml tunnel run
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
