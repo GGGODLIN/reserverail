@@ -1,7 +1,8 @@
 import type { Groth16VerificationKey } from "snarkjs";
 import { z } from "zod";
-import { BN128_SCALAR_FIELD, verifyTransitionProof } from "../circuit/prover.ts";
+import { verifyTransitionProof } from "../circuit/verifier.ts";
 import {
+  SNARK_SCALAR_FIELD,
   VERIFICATION_KEY,
   fromPublicSignalsArray,
   toPublicSignalsArray,
@@ -102,7 +103,7 @@ export interface AuditChainVerificationResult {
 
 function normalizeFieldString(value: string | bigint, label: string): string {
   const big = typeof value === "bigint" ? value : BigInt(value);
-  if (big < 0n || big >= BN128_SCALAR_FIELD) {
+  if (big < 0n || big >= SNARK_SCALAR_FIELD) {
     throw new RangeError(`${label} is outside bn128 scalar field`);
   }
   return big.toString(10);

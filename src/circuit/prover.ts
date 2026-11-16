@@ -4,11 +4,10 @@ import { fileURLToPath } from "node:url";
 import { IMT } from "@zk-kit/imt";
 import { poseidon1, poseidon2, poseidon4 } from "poseidon-lite";
 import * as snarkjs from "snarkjs";
-import type { Groth16Proof, Groth16VerificationKey } from "snarkjs";
+import type { Groth16Proof } from "snarkjs";
 import {
   ALLOWLIST_TREE_DEPTH,
   PUBLIC_SIGNAL_NAMES,
-  VERIFICATION_KEY,
   fromPublicSignalsArray,
   toPublicSignalsArray,
 } from "../generated/circuit-abi.ts";
@@ -401,16 +400,7 @@ export async function proveTransition(
   };
 }
 
-export async function verifyTransitionProof(
-  proof: Groth16Proof,
-  signals: ReserveRailPublicSignals | readonly string[],
-  verificationKey: Groth16VerificationKey = VERIFICATION_KEY,
-): Promise<boolean> {
-  const publicSignalStrings = Array.isArray(signals)
-    ? [...signals]
-    : toPublicSignalsArray(signals as ReserveRailPublicSignals);
-  return snarkjs.groth16.verify(verificationKey, publicSignalStrings, proof);
-}
+export { verifyTransitionProof } from "./verifier.ts";
 
 export async function terminateCurve(): Promise<void> {
   await globalThis.curve_bn128?.terminate();
