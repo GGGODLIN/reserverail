@@ -9,8 +9,10 @@
     "node": ">=24.1.0"
   },
   "scripts": {
+    "start": "node --experimental-strip-types src/server/start.ts",
     "build:circuit": "node --experimental-strip-types scripts/build-circuit.ts",
     "probe:kurier": "node --experimental-strip-types scripts/kurier-live-probe.ts",
+    "diag": "node --experimental-strip-types scripts/diag.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test tests/*.test.ts"
   },
