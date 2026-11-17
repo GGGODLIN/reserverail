@@ -372,9 +372,14 @@ export async function calculateTransitionWitness(
 }
 
 export async function proveTransition(
-  request: SingleStepTransitionRequest,
+  requestOrEvaluated:
+    | SingleStepTransitionRequest
+    | Extract<SingleStepEvaluationResult, { readonly ok: true }>,
 ): Promise<ReserveRailProofBundle> {
-  const evaluation = evaluateSingleStepTransition(request);
+  const evaluation =
+    "circuitInput" in requestOrEvaluated
+      ? requestOrEvaluated
+      : evaluateSingleStepTransition(requestOrEvaluated);
   if (!evaluation.ok) {
     throw new RangeError(`Policy transition rejected: ${evaluation.reasonCode}`);
   }

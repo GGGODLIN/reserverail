@@ -15,7 +15,6 @@ import {
 } from "../engine/audit-chain.ts";
 import {
   MAX_MEMO_CHARS,
-  NaiveSingleCapExecutor,
   parsePaymentIntent,
   parseStrictNonNegativeUint64,
 } from "../engine/intent-parser.ts";
@@ -25,7 +24,7 @@ import type { ExecuteTransitionResult } from "../engine/ledger-service.ts";
 import { ProvingSemaphore } from "../engine/proving-semaphore.ts";
 import { loadBaselineMainnetCassette } from "../engine/replay-cassette.ts";
 import { ReserveRailStore } from "../engine/sqlite-store.ts";
-import type { NaiveLedgerEntry } from "../engine/sqlite-store.ts";
+import type { NaiveDecisionOutcome } from "../engine/sqlite-store.ts";
 import { AgentEndpointHandler } from "./agent-handler.ts";
 
 const SMALL_BODY_MAX_BYTES = 16 * 1024;
@@ -84,7 +83,7 @@ const ProposeBodySchema = z
 const ActBodySchema = z
   .object({
     sandboxId: z.string().optional(),
-    actId: z.enum(["act1_injection", "act1_legit", "act2_structuring", "act3_concurrency"]),
+    actId: z.enum(["act1_injection", "act2_structuring", "act3_concurrency"]),
     mode: z.enum(["LIVE", "DETERMINISTIC_REPLAY"]).optional(),
   })
   .strict();
@@ -92,17 +91,11 @@ const ActBodySchema = z
 const ResetBodySchema = z
   .object({
     sandboxId: z.string().min(3).max(64),
-    balance: z.union([z.number(), z.string()]).optional(),
-    payrollFloor: z.union([z.number(), z.string()]).optional(),
-    epochCap: z.union([z.number(), z.string()]).optional(),
-    naiveSingleCap: z.union([z.number(), z.string()]).optional(),
-    epoch: z.union([z.number(), z.string()]).optional(),
   })
   .strict();
 
 const TamperBodySchema = z
   .object({
-    useBaselineCassette: z.boolean().optional(),
     tamperedAmount: z.string().regex(/^(0|[1-9][0-9]*)$/).optional(),
     receipt: z
       .object({
@@ -189,6 +182,60 @@ function sendJson(
   res.end(text);
 }
 
+async function readDemoJsonBody<T>(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  maxBytes: number,
+  schema: z.ZodType<T>,
+  allowEmptyDefault = false,
+): Promise<T | null> {
+  let rawBody: Buffer;
+  try {
+    rawBody = await readRawBody(req, maxBytes);
+  } catch (err: unknown) {
+    if (err instanceof PayloadTooLargeError) {
+      sendJson(res, 413, { ok: false, code: "PAYLOAD_TOO_LARGE", error: err.message }, true);
+      return null;
+    }
+    sendJson(res, 400, { ok: false, error: "Unable to read request body" });
+    return null;
+  }
+
+  let parsed: unknown = {};
+  if (!allowEmptyDefault || rawBody.length > 0) {
+    try {
+      parsed = JSON.parse(rawBody.toString("utf8"));
+    } catch {
+      sendJson(res, 400, { ok: false, code: "INVALID_JSON", error: "Malformed JSON body" });
+      return null;
+    }
+  }
+
+  const validated = schema.safeParse(parsed);
+  if (!validated.success) {
+    sendJson(res, 400, {
+      ok: false,
+      code: "INVALID_BODY",
+      error: "Request body failed validation",
+      issues: validated.error.issues.map((i) => i.message),
+    });
+    return null;
+  }
+  return validated.data;
+}
+
+function resolveClientIp(req: http.IncomingMessage): string {
+  const peer = req.socket.remoteAddress ?? "local";
+  if (peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1") {
+    const cfHeader = req.headers["cf-connecting-ip"];
+    const candidate = (Array.isArray(cfHeader) ? cfHeader[0] : cfHeader)?.trim() ?? "";
+    if (/^[0-9a-fA-F:.]{3,45}$/.test(candidate)) {
+      return candidate;
+    }
+  }
+  return peer;
+}
+
 // Serves the built workbench (index.html and dist/web assets) without ever reading outside webRoot.
 async function serveWorkbenchFile(res: http.ServerResponse, pathname: string, webRoot: string): Promise<boolean> {
   let decoded: string;
@@ -267,7 +314,6 @@ async function buildDemoStateResponse(
 ): Promise<Record<string, unknown>> {
   const sbx = store.getOrCreateSandbox(sandboxId, "demo");
   const receipts = store.getReceipts(sandboxId);
-  const naiveLedger = store.getNaiveEntries(sandboxId);
   const historicalLinks = store.getHistoricalMainnetLinks(sandboxId);
   const auditChain = await verifyAuditChain(
     receipts,
@@ -299,7 +345,6 @@ async function buildDemoStateResponse(
       spentSoFar: sbx.spentSoFar,
       epoch: sbx.currentEpoch,
       naiveSingleCap: sbx.naiveSingleCap,
-      naiveSpentTotal: sbx.naiveSpentTotal,
       naiveEpochSpent: sbx.naiveEpochSpent,
       allowlist: sbx.allowlist,
     },
@@ -309,18 +354,9 @@ async function buildDemoStateResponse(
       currentCommitment: sbx.currentCommitment,
       vkHash: REGISTERED_VK_HASH,
     },
-    naiveLedger,
     receipts,
     mainnetExplorerLinks,
     auditChain,
-    baselineMainnetCassette: {
-      vkHash: service.cassette.vkHash,
-      jobId: service.cassette.validTransition.jobId,
-      txHash: service.cassette.validTransition.txHash,
-      blockHash: service.cassette.validTransition.blockHash,
-      txExplorerUrl: service.cassette.validTransition.txExplorerUrl,
-      status: service.cassette.validTransition.status,
-    },
   };
 }
 
@@ -374,8 +410,6 @@ export async function createReserveRailServer(
     submitRetryDelayMs: options.submitRetryDelayMs,
   });
 
-  const naiveExecutor = new NaiveSingleCapExecutor();
-
   const maritacaKey = options.maritacaApiKey ?? process.env.MARITACA_API_KEY;
   const amdKey = options.amdTokenLabApiKey ?? process.env.AMD_TOKEN_LAB_API_KEY;
   const effectiveAgentHmacSecret =
@@ -408,7 +442,7 @@ export async function createReserveRailServer(
     readonly clientIp: string;
   }): Promise<{
     readonly intent: ProposedPaymentIntent;
-    readonly naiveResult: NaiveLedgerEntry;
+    readonly naiveResult: NaiveDecisionOutcome;
     readonly reserveRailResult: ExecuteTransitionResult;
   }> => {
     const sbx = store.getOrCreateSandbox(params.sandboxId, "demo");
@@ -429,7 +463,11 @@ export async function createReserveRailServer(
       defaultEpoch: BigInt(sbx.currentEpoch),
     });
 
-    const naiveResult = naiveExecutor.execute(store, params.sandboxId, intent);
+    const naiveResult = store.recordNaiveDecision({
+      sandboxId: params.sandboxId,
+      amount: intent.amount,
+      epoch: intent.epoch,
+    });
     const reserveRailResult = await service.executeTransition({
       sandboxId: params.sandboxId,
       scopeType: "demo",
@@ -446,7 +484,7 @@ export async function createReserveRailServer(
       const urlObj = new URL(req.url ?? "/", "http://localhost");
       const pathname = urlObj.pathname;
       const method = (req.method ?? "GET").toUpperCase();
-      const clientIp = req.socket.remoteAddress ?? "local";
+      const clientIp = resolveClientIp(req);
 
       if (method === "OPTIONS") {
         sendJson(res, 204, {});
@@ -519,38 +557,10 @@ export async function createReserveRailServer(
       }
 
       if (method === "POST" && pathname === "/api/demo/propose") {
-        let rawBody: Buffer;
-        try {
-          rawBody = await readRawBody(req, SMALL_BODY_MAX_BYTES);
-        } catch (err: unknown) {
-          if (err instanceof PayloadTooLargeError) {
-            sendJson(res, 413, { ok: false, code: "PAYLOAD_TOO_LARGE", error: err.message });
-            return;
-          }
-          sendJson(res, 400, { ok: false, error: "Unable to read request body" });
+        const body = await readDemoJsonBody(req, res, SMALL_BODY_MAX_BYTES, ProposeBodySchema);
+        if (body === null) {
           return;
         }
-
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(rawBody.toString("utf8"));
-        } catch {
-          sendJson(res, 400, { ok: false, code: "INVALID_JSON", error: "Malformed JSON body" });
-          return;
-        }
-
-        const validated = ProposeBodySchema.safeParse(parsed);
-        if (!validated.success) {
-          sendJson(res, 400, {
-            ok: false,
-            code: "INVALID_BODY",
-            error: "Request body failed validation",
-            issues: validated.error.issues.map((i) => i.message),
-          });
-          return;
-        }
-
-        const body = validated.data;
         const sbxResolved = resolveSandboxId(body.sandboxId);
         if (!sbxResolved.ok) {
           sendJson(res, sbxResolved.status, { ok: false, error: sbxResolved.error });
@@ -594,7 +604,6 @@ export async function createReserveRailServer(
             intent: serializeIntent(stepRes.intent),
             naiveResult: stepRes.naiveResult,
             reserveRailResult: stepRes.reserveRailResult,
-            auditChainStatus: statePayload.auditChain,
             state: statePayload,
           });
         } catch (err: unknown) {
@@ -605,42 +614,20 @@ export async function createReserveRailServer(
       }
 
       if (method === "POST" && pathname === "/api/demo/act") {
-        let rawBody: Buffer;
-        try {
-          rawBody = await readRawBody(req, SMALL_BODY_MAX_BYTES);
-        } catch (err: unknown) {
-          if (err instanceof PayloadTooLargeError) {
-            sendJson(res, 413, { ok: false, code: "PAYLOAD_TOO_LARGE", error: err.message });
-            return;
-          }
-          sendJson(res, 400, { ok: false, error: "Unable to read request body" });
+        const actBody = await readDemoJsonBody(req, res, SMALL_BODY_MAX_BYTES, ActBodySchema);
+        if (actBody === null) {
           return;
         }
-
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(rawBody.toString("utf8"));
-        } catch {
-          sendJson(res, 400, { ok: false, code: "INVALID_JSON", error: "Malformed JSON body" });
-          return;
-        }
-
-        const validated = ActBodySchema.safeParse(parsed);
-        if (!validated.success) {
-          sendJson(res, 400, { ok: false, code: "INVALID_BODY", error: "Invalid act request" });
-          return;
-        }
-
-        const sbxResolved = resolveSandboxId(validated.data.sandboxId);
+        const sbxResolved = resolveSandboxId(actBody.sandboxId);
         if (!sbxResolved.ok) {
           sendJson(res, sbxResolved.status, { ok: false, error: sbxResolved.error });
           return;
         }
         const sandboxId = sbxResolved.sandboxId;
-        const mode = validated.data.mode;
-        const actId = validated.data.actId;
+        const mode = actBody.mode;
+        const actId = actBody.actId;
 
-        if (actId === "act1_injection" || actId === "act1_legit") {
+        if (actId === "act1_injection") {
           store.resetSandbox(sandboxId, {
             balance: 100_000n,
             payrollFloor: 60_000n,
@@ -748,8 +735,16 @@ export async function createReserveRailServer(
           ),
         ]);
 
-        const naiveA = naiveExecutor.execute(store, sandboxId, intentA);
-        const naiveB = naiveExecutor.execute(store, sandboxId, intentB);
+        const naiveA = store.recordNaiveDecision({
+          sandboxId,
+          amount: intentA.amount,
+          epoch: intentA.epoch,
+        });
+        const naiveB = store.recordNaiveDecision({
+          sandboxId,
+          amount: intentB.amount,
+          epoch: intentB.epoch,
+        });
 
         const effectiveMode = mode ?? (kurierClient !== null ? "LIVE" : "DETERMINISTIC_REPLAY");
         const [rrA, rrB] = await Promise.all([
@@ -793,99 +788,28 @@ export async function createReserveRailServer(
       }
 
       if (method === "POST" && pathname === "/api/demo/reset") {
-        let rawBody: Buffer;
-        try {
-          rawBody = await readRawBody(req, SMALL_BODY_MAX_BYTES);
-        } catch (err: unknown) {
-          if (err instanceof PayloadTooLargeError) {
-            sendJson(res, 413, { ok: false, code: "PAYLOAD_TOO_LARGE", error: err.message });
-            return;
-          }
-          sendJson(res, 400, { ok: false, error: "Unable to read request body" });
+        const resetBody = await readDemoJsonBody(req, res, SMALL_BODY_MAX_BYTES, ResetBodySchema);
+        if (resetBody === null) {
           return;
         }
-
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(rawBody.toString("utf8"));
-        } catch {
-          sendJson(res, 400, { ok: false, code: "INVALID_JSON", error: "Malformed JSON body" });
-          return;
-        }
-
-        const validated = ResetBodySchema.safeParse(parsed);
-        if (!validated.success) {
-          sendJson(res, 400, { ok: false, code: "INVALID_BODY", error: "Invalid reset payload" });
-          return;
-        }
-
-        const sbxResolved = resolveSandboxId(validated.data.sandboxId);
+        const sbxResolved = resolveSandboxId(resetBody.sandboxId);
         if (!sbxResolved.ok) {
           sendJson(res, sbxResolved.status, { ok: false, error: sbxResolved.error });
           return;
         }
 
-        try {
-          const d = validated.data;
-          const balance = d.balance !== undefined ? parseStrictNonNegativeUint64(d.balance, "balance") : undefined;
-          const payrollFloor =
-            d.payrollFloor !== undefined ? parseStrictNonNegativeUint64(d.payrollFloor, "payrollFloor") : undefined;
-          const epochCap = d.epochCap !== undefined ? parseStrictNonNegativeUint64(d.epochCap, "epochCap") : undefined;
-          const naiveSingleCap =
-            d.naiveSingleCap !== undefined ? parseStrictNonNegativeUint64(d.naiveSingleCap, "naiveSingleCap") : undefined;
-          const epoch = d.epoch !== undefined ? parseStrictNonNegativeUint64(d.epoch, "epoch") : undefined;
-          if (epoch !== undefined && epoch === 0n) {
-            throw new RangeError('Field "epoch" must be >= 1');
-          }
-          if ((payrollFloor ?? 60_000n) > (balance ?? 100_000n)) {
-            throw new RangeError("payrollFloor cannot exceed balance");
-          }
-          store.resetSandbox(
-            sbxResolved.sandboxId,
-            { balance, payrollFloor, epochCap, naiveSingleCap, epoch },
-            "demo",
-          );
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : "Invalid policy parameters";
-          sendJson(res, 400, { ok: false, code: "INVALID_POLICY_CONFIG", error: msg });
-          return;
-        }
-
+        store.resetSandbox(sbxResolved.sandboxId, undefined, "demo");
         const statePayload = await buildDemoStateResponse(store, service, sbxResolved.sandboxId, relayMode);
         sendJson(res, 200, { ok: true, state: statePayload });
         return;
       }
 
       if (method === "POST" && pathname === "/api/demo/tamper") {
-        let rawBody: Buffer;
-        try {
-          rawBody = await readRawBody(req, 262_144);
-        } catch (err: unknown) {
-          if (err instanceof PayloadTooLargeError) {
-            sendJson(res, 413, { ok: false, code: "PAYLOAD_TOO_LARGE", error: err.message }, true);
-            return;
-          }
-          sendJson(res, 400, { ok: false, error: "Unable to read request body" });
+        const tamperBody = await readDemoJsonBody(req, res, 262_144, TamperBodySchema, true);
+        if (tamperBody === null) {
           return;
         }
-
-        let parsed: unknown = {};
-        if (rawBody.length > 0) {
-          try {
-            parsed = JSON.parse(rawBody.toString("utf8"));
-          } catch {
-            sendJson(res, 400, { ok: false, code: "INVALID_JSON", error: "Malformed JSON body" });
-            return;
-          }
-        }
-
-        const validated = TamperBodySchema.safeParse(parsed);
-        if (!validated.success) {
-          sendJson(res, 400, { ok: false, code: "INVALID_BODY", error: "Invalid tamper payload" });
-          return;
-        }
-
-        const r = validated.data.receipt;
+        const r = tamperBody.receipt;
         const signalsArr =
           r?.publicSignalsArray ??
           (r?.publicSignals
@@ -904,7 +828,7 @@ export async function createReserveRailServer(
           const tamperRes = await service.tamperCheck({
             proof: r?.proof,
             publicSignalsArray: signalsArr,
-            tamperedAmount: validated.data.tamperedAmount,
+            tamperedAmount: tamperBody.tamperedAmount,
           });
           sendJson(res, 200, tamperRes);
         } catch (err: unknown) {
@@ -915,68 +839,21 @@ export async function createReserveRailServer(
       }
 
       if (method === "POST" && pathname === "/api/demo/verify-chain") {
-        let rawBody: Buffer;
-        try {
-          rawBody = await readRawBody(req, 262_144);
-        } catch (err: unknown) {
-          if (err instanceof PayloadTooLargeError) {
-            sendJson(res, 413, { ok: false, code: "PAYLOAD_TOO_LARGE", error: err.message }, true);
-            return;
-          }
-          sendJson(res, 400, { ok: false, error: "Unable to read request body" });
-          return;
-        }
-
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(rawBody.toString("utf8"));
-        } catch {
-          sendJson(res, 400, { ok: false, code: "INVALID_JSON", error: "Malformed JSON body" });
-          return;
-        }
-
-        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-          sendJson(res, 400, { ok: false, code: "INVALID_BODY", error: "Invalid verify-chain payload" });
-          return;
-        }
-
-        const body = parsed as Record<string, unknown>;
-        if (typeof body.sandboxId === "string") {
-          const sbxResolved = resolveSandboxId(body.sandboxId);
-          if (!sbxResolved.ok) {
-            sendJson(res, sbxResolved.status, { ok: false, error: sbxResolved.error });
-            return;
-          }
-          const sbx = store.getOrCreateSandbox(sbxResolved.sandboxId, "demo");
-          const receipts = store.getReceipts(sbxResolved.sandboxId);
-          const verifyRes = await verifyAuditChain(
-            receipts,
-            sbx.genesisCommitment,
-            sbx.policyRoot,
-            VERIFICATION_KEY,
-          );
-          sendJson(res, 200, verifyRes);
-          return;
-        }
-
-        if (
-          !Array.isArray(body.receipts) ||
-          typeof body.genesisCommitment !== "string" ||
-          typeof body.policyRoot !== "string"
-        ) {
-          sendJson(res, 400, {
-            ok: false,
-            code: "MISSING_FIELDS",
-            error: "Provide either sandboxId or { receipts, genesisCommitment, policyRoot }",
-          });
+        const VerifyChainBodySchema = z.object({
+          receipts: z.array(z.unknown()),
+          genesisCommitment: z.string(),
+          policyRoot: z.string(),
+        });
+        const chainBody = await readDemoJsonBody(req, res, 262_144, VerifyChainBodySchema);
+        if (chainBody === null) {
           return;
         }
 
         try {
           const verifyRes = await verifyAuditChain(
-            body.receipts,
-            body.genesisCommitment,
-            body.policyRoot,
+            chainBody.receipts,
+            chainBody.genesisCommitment,
+            chainBody.policyRoot,
             VERIFICATION_KEY,
           );
           sendJson(res, 200, verifyRes);

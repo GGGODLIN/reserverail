@@ -1,5 +1,4 @@
 import { useSyncExternalStore } from "react";
-import { VERIFICATION_KEY } from "../../src/generated/circuit-abi.ts";
 import { fetchDemoState, proposePayment, resetSandbox, runServerAct, sendTamperedReceipt } from "./api.ts";
 import type { DemoState, DemoStep, ServerActId, TamperResponse, TreasuryReceipt } from "./api-types.ts";
 import {
@@ -64,7 +63,6 @@ export interface WorkbenchStore {
   verifySelectedProof(): Promise<void>;
   verifyChain(): Promise<void>;
   tamperSelected(): Promise<void>;
-  downloadProofBundle(): void;
 }
 
 export const ACT_LABELS: Readonly<Record<ActKey, string>> = {
@@ -568,23 +566,6 @@ export function createWorkbenchStore(): WorkbenchStore {
           });
         }
       }
-    },
-
-    downloadProofBundle() {
-      const receipt = selectedReceipt(state);
-      const sandboxId = state.view.sandboxId;
-      if (receipt === null || sandboxId === null) {
-        return;
-      }
-      const bundle = { proof: receipt.proof, publicSignals: receipt.publicSignalsArray, vkey: VERIFICATION_KEY };
-      const url = URL.createObjectURL(new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" }));
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `reserverail-proof-C${receipt.seq}-${sandboxId}.json`;
-      link.click();
-      // Revoking right away can cancel the download in some browsers.
-      setTimeout(() => URL.revokeObjectURL(url), 10_000);
-      announce(`Proof bundle for receipt ${commitmentLabel(receipt.seq)} downloaded; check it offline with snarkjs groth16 verify.`);
     },
   };
 }

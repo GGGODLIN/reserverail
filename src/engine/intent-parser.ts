@@ -3,7 +3,7 @@ import { z } from "zod";
 import { MAX_UINT64 } from "../circuit/prover.ts";
 import { DEFAULT_VENDORS, stringToFieldElement } from "./policy.ts";
 import type { AllowlistVendor } from "./policy.ts";
-import type { NaiveLedgerEntry, ReserveRailStore } from "./sqlite-store.ts";
+import type { ReserveRailStore } from "./sqlite-store.ts";
 
 export const MAX_MEMO_CHARS = 512;
 
@@ -67,13 +67,19 @@ const LlmParsedOutputSchema = z.object({
   invoiceId: z.string().min(1).max(128).optional(),
 });
 
-// Per-IP sliding window rate limiter for free LLM calls (zero-dollar protection)
+// Per-IP and global sliding-window rate limiters for free LLM calls (zero-dollar protection)
 const llmIpWindow = new Map<string, number[]>();
+let llmGlobalWindow: number[] = [];
 const LLM_RATE_WINDOW_MS = 60_000;
 const LLM_MAX_PER_IP_PER_MIN = 8;
+const LLM_MAX_GLOBAL_PER_MIN = 24;
 
 function checkAndRecordLlmRateLimit(ip: string): boolean {
   const now = Date.now();
+  llmGlobalWindow = llmGlobalWindow.filter((ts) => now - ts <= LLM_RATE_WINDOW_MS);
+  if (llmGlobalWindow.length >= LLM_MAX_GLOBAL_PER_MIN) {
+    return false;
+  }
   if (llmIpWindow.size > 4_096) {
     for (const [k, tsList] of llmIpWindow) {
       const kept = tsList.filter((ts) => now - ts <= LLM_RATE_WINDOW_MS);
@@ -95,6 +101,7 @@ function checkAndRecordLlmRateLimit(ip: string): boolean {
     return false;
   }
   freshIp.push(now);
+  llmGlobalWindow.push(now);
   llmIpWindow.set(ip, freshIp);
   return true;
 }
@@ -542,22 +549,4 @@ export async function parsePaymentIntent(
   }
 
   return intent;
-}
-
-export class NaiveSingleCapExecutor {
-  public execute(
-    store: ReserveRailStore,
-    sandboxId: string,
-    intent: ProposedPaymentIntent,
-  ): NaiveLedgerEntry {
-    return store.recordNaiveDecision({
-      sandboxId,
-      vendorName: intent.vendorName,
-      recipientAddress: intent.recipientAddress,
-      amount: intent.amount,
-      epoch: intent.epoch,
-      invoiceId: intent.invoiceId,
-      memo: intent.memo,
-    });
-  }
 }

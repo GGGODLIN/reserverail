@@ -11,7 +11,6 @@ interface VerificationPanelProps {
   readonly onVerifyProof: () => void;
   readonly onVerifyChain: () => void;
   readonly onTamper: () => void;
-  readonly onDownload: () => void;
 }
 
 export function VerificationPanel({
@@ -21,7 +20,6 @@ export function VerificationPanel({
   onVerifyProof,
   onVerifyChain,
   onTamper,
-  onDownload,
 }: VerificationPanelProps) {
   const running = results.running !== null;
   const lines = [results.groth16, results.chain].filter((line): line is string => line !== null);
@@ -46,9 +44,6 @@ export function VerificationPanel({
         </button>
         <button type="button" className="button-danger" disabled={!hasReceipt || running} onClick={onTamper}>
           {"Tamper & Send to Kurier Mainnet"}
-        </button>
-        <button type="button" disabled={!hasReceipt} onClick={onDownload}>
-          Download proof bundle
         </button>
       </div>
       {lines.length > 0 ? (

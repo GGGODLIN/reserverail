@@ -54,7 +54,6 @@ describe("Story 10/F2: keyboard, announcements, hex layout and relay badges", ()
       "Verify Groth16 proof in this browser",
       "Verify audit chain in this browser",
       "Tamper & Send to Kurier Mainnet",
-      "Download proof bundle",
       "Expand vkHash",
     ]) {
       expect(reached.has(control), `Tab never reached "${control}"`).toBe(true);

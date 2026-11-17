@@ -423,21 +423,7 @@ export class TreasuryLedgerService {
         const releaseSlot = await this.semaphore.acquire(params.priority ?? 1, params.signal);
         try {
           this.onProveStarted?.();
-          const bundle = await proveTransition({
-            allowlistRecipients: sandbox.allowlist.map((v) => BigInt(v.recipientField)),
-            epochCap: BigInt(sandbox.epochCap),
-            payrollFloor: BigInt(sandbox.payrollFloor),
-            policySalt: BigInt(sandbox.policySalt),
-            balance: BigInt(sandbox.balance),
-            spentSoFar: BigInt(sandbox.spentSoFar),
-            prevEpoch: BigInt(sandbox.currentEpoch),
-            prevSalt: BigInt(sandbox.currentSalt),
-            recipient: params.intent.recipientField,
-            amount: params.intent.amount,
-            epoch: params.intent.epoch,
-            invoiceIdField: params.intent.invoiceIdField,
-            newSalt,
-          });
+          const bundle = await proveTransition(shadow);
           const localOk = await verifyTransitionProof(
             bundle.proof,
             bundle.publicSignalsArray,

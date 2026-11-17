@@ -520,7 +520,7 @@ describe("Ticket 02 — Public /api/demo/* (3-Act Flow, Input Defense, Circular 
       const tamperRes = await fetch(`${srv.url}/api/demo/tamper`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ useBaselineCassette: true }),
+        body: JSON.stringify({}),
       });
       assert.equal(tamperRes.status, 200);
       const tamperJson = (await tamperRes.json()) as {
@@ -658,12 +658,14 @@ describe("Ticket 02 — Public /api/demo/* (3-Act Flow, Input Defense, Circular 
       });
       assert.equal(badSigRes.status, 400);
 
-      // 3. Omitted epoch after reset to epoch=2 uses active sandbox epoch=2 instead of hardcoding 1
-      await fetch(`${srv.url}/api/demo/reset`, {
+      // 3. Omitted epoch after internal sandbox epoch advance uses active sandbox epoch=2 instead of hardcoding 1
+      srv.store.resetSandbox("sbx_ep2", { epoch: 2n }, "demo");
+      const badResetOverride = await fetch(`${srv.url}/api/demo/reset`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ sandboxId: "sbx_ep2", epoch: 2 }),
       });
+      assert.equal(badResetOverride.status, 400);
       const ep2Propose = await fetch(`${srv.url}/api/demo/propose`, {
         method: "POST",
         headers: { "content-type": "application/json" },

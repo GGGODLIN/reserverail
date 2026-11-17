@@ -59,7 +59,7 @@ npm test
 npm start
 ```
 
-- `npm test` runs all `27` unit, API, concurrency lease, and `fast-check` differential property-based tests (`P1..P5` against real `artifacts/reserverail.wasm`, `0` mocks of Poseidon or SQLite).
+- `npm test` runs all `28` unit, API, concurrency lease, and `fast-check` differential property-based tests (`P1..P5` against real `artifacts/reserverail.wasm`, `0` mocks of Poseidon or SQLite).
 - `npm run test:e2e` builds the production Vite workbench and runs all `14` headless Chromium E2E checks (`replay` + `live-sim`).
 - `npm run diag` prints a redacted single-command health and Outbox diagnostic summary.
 

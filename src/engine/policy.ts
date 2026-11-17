@@ -1,8 +1,6 @@
 import crypto from "node:crypto";
 import { poseidon2 } from "poseidon-lite";
 import {
-  BN128_SCALAR_FIELD,
-  MAX_UINT64,
   calculateTransitionWitness,
   evaluateSingleStepTransition,
 } from "../circuit/prover.ts";
@@ -80,14 +78,6 @@ export type PolicyShadowResult =
       readonly message: string;
     };
 
-function isUint64(v: bigint): boolean {
-  return typeof v === "bigint" && v >= 0n && v <= MAX_UINT64;
-}
-
-function isField(v: bigint): boolean {
-  return typeof v === "bigint" && v >= 0n && v < BN128_SCALAR_FIELD;
-}
-
 const REASON_MESSAGES: Readonly<Record<string, string>> = {
   UINT64_OUT_OF_RANGE: "Monetary or epoch input is outside the 64-bit unsigned integer domain",
   FIELD_OUT_OF_RANGE: "Field input is outside the bn128 scalar field",
@@ -100,82 +90,18 @@ const REASON_MESSAGES: Readonly<Record<string, string>> = {
 };
 
 export function evaluatePolicyShadow(input: PolicyShadowInput): PolicyShadowResult {
-  const uint64Fields = [
-    input.epochCap,
-    input.payrollFloor,
-    input.balance,
-    input.spentSoFar,
-    input.prevEpoch,
-    input.amount,
-    input.epoch,
-  ];
-  if (!uint64Fields.every(isUint64)) {
+  const circuitEval = evaluateSingleStepTransition(input);
+  if (!circuitEval.ok) {
+    const code = circuitEval.reasonCode as Exclude<PolicyShadowResult, { readonly ok: true }>["reasonCode"];
     return {
       ok: false,
-      reasonCode: "UINT64_OUT_OF_RANGE",
-      invariantDrift: false,
-      message: REASON_MESSAGES.UINT64_OUT_OF_RANGE!,
+      reasonCode: REASON_MESSAGES[code] !== undefined ? code : "INVARIANT_BROKEN",
+      invariantDrift: REASON_MESSAGES[code] === undefined,
+      message: REASON_MESSAGES[code] ?? `${REASON_MESSAGES.INVARIANT_BROKEN}: ${circuitEval.reasonCode}`,
     };
   }
 
-  const scalarFields = [
-    input.recipient,
-    input.invoiceIdField,
-    input.policySalt,
-    input.prevSalt,
-    input.newSalt,
-    ...input.allowlistRecipients,
-  ];
-  if (!scalarFields.every(isField)) {
-    return {
-      ok: false,
-      reasonCode: "FIELD_OUT_OF_RANGE",
-      invariantDrift: false,
-      message: REASON_MESSAGES.FIELD_OUT_OF_RANGE!,
-    };
-  }
-
-  const allowlistSet = new Set(input.allowlistRecipients);
-  if (!allowlistSet.has(input.recipient)) {
-    return {
-      ok: false,
-      reasonCode: "ALLOWLIST_MISS",
-      invariantDrift: false,
-      message: REASON_MESSAGES.ALLOWLIST_MISS!,
-    };
-  }
-
-  if (input.epoch < input.prevEpoch) {
-    return {
-      ok: false,
-      reasonCode: "STALE_EPOCH",
-      invariantDrift: false,
-      message: REASON_MESSAGES.STALE_EPOCH!,
-    };
-  }
-
-  const baseSpent = input.epoch === input.prevEpoch ? input.spentSoFar : 0n;
-  const newSpent = baseSpent + input.amount;
-
-  if (newSpent > input.epochCap) {
-    return {
-      ok: false,
-      reasonCode: "EPOCH_CAP_EXCEEDED",
-      invariantDrift: false,
-      message: REASON_MESSAGES.EPOCH_CAP_EXCEEDED!,
-    };
-  }
-
-  if (newSpent + input.payrollFloor > input.balance) {
-    return {
-      ok: false,
-      reasonCode: "PAYROLL_FLOOR_BREACH",
-      invariantDrift: false,
-      message: REASON_MESSAGES.PAYROLL_FLOOR_BREACH!,
-    };
-  }
-
-  const invoiceHash = computeInvoiceHash(input.recipient, input.invoiceIdField);
+  const invoiceHash = circuitEval.publicSignals.invoiceHash;
   if (input.knownInvoiceHashes?.has(invoiceHash.toString(10))) {
     return {
       ok: false,
@@ -185,29 +111,10 @@ export function evaluatePolicyShadow(input: PolicyShadowInput): PolicyShadowResu
     };
   }
 
-  const circuitEval = evaluateSingleStepTransition(input);
-  if (!circuitEval.ok) {
-    return {
-      ok: false,
-      reasonCode: "INVARIANT_BROKEN",
-      invariantDrift: true,
-      message: `${REASON_MESSAGES.INVARIANT_BROKEN}: ${circuitEval.reasonCode}`,
-    };
-  }
-
-  if (circuitEval.newSpent !== newSpent || circuitEval.publicSignals.invoiceHash !== invoiceHash) {
-    return {
-      ok: false,
-      reasonCode: "INVARIANT_BROKEN",
-      invariantDrift: true,
-      message: REASON_MESSAGES.INVARIANT_BROKEN!,
-    };
-  }
-
   return {
     ok: true,
     reasonCode: "POLICY_PASS",
-    newSpent,
+    newSpent: circuitEval.newSpent,
     invoiceHash,
     publicSignals: circuitEval.publicSignals,
     circuitInput: circuitEval.circuitInput,

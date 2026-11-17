@@ -247,7 +247,6 @@ export function App({ store }: { readonly store: WorkbenchStore }) {
             onVerifyProof={() => void store.verifySelectedProof()}
             onVerifyChain={() => void store.verifyChain()}
             onTamper={() => void store.tamperSelected()}
-            onDownload={store.downloadProofBundle}
           />
           <ProposeForm
             draft={state.draft}

@@ -47,7 +47,6 @@ export interface SandboxSnapshot {
   readonly genesisCommitment: string;
   readonly currentCommitment: string;
   readonly naiveSingleCap: string;
-  readonly naiveSpentTotal: string;
   readonly naiveEpochSpent: string;
   readonly naiveEpoch: string;
   readonly inFlightLeaseId: string | null;
@@ -55,19 +54,9 @@ export interface SandboxSnapshot {
   readonly seqCounter: number;
 }
 
-export interface NaiveLedgerEntry {
-  readonly id: string;
-  readonly sandboxId: string;
-  readonly seq: number;
-  readonly vendorName: string;
-  readonly recipientAddress: string;
-  readonly amount: string;
-  readonly epoch: string;
-  readonly invoiceId: string;
+export interface NaiveDecisionOutcome {
   readonly approved: boolean;
   readonly reasonCode: string;
-  readonly memo: string | null;
-  readonly createdAt: string;
 }
 
 export interface MainnetExplorerLink {
@@ -156,7 +145,6 @@ function parseSandboxRow(row: Record<string, unknown>): SandboxSnapshot {
     genesisCommitment: String(row.genesis_commitment),
     currentCommitment: String(row.current_commitment),
     naiveSingleCap: String(row.naive_single_cap),
-    naiveSpentTotal: String(row.naive_spent_total),
     naiveEpochSpent: String(row.naive_epoch_spent),
     naiveEpoch: String(row.naive_epoch),
     inFlightLeaseId: row.in_flight_lease_id === null ? null : String(row.in_flight_lease_id),
@@ -203,7 +191,6 @@ export class ReserveRailStore {
         genesis_commitment TEXT NOT NULL,
         current_commitment TEXT NOT NULL,
         naive_single_cap TEXT NOT NULL,
-        naive_spent_total TEXT NOT NULL,
         naive_epoch_spent TEXT NOT NULL,
         naive_epoch TEXT NOT NULL,
         in_flight_lease_id TEXT,
@@ -239,7 +226,6 @@ export class ReserveRailStore {
         public_signals_json TEXT NOT NULL,
         public_signals_array_json TEXT NOT NULL,
         error_message TEXT,
-        retry_count INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
@@ -254,21 +240,6 @@ export class ReserveRailStore {
 
       CREATE INDEX IF NOT EXISTS idx_outbox_sandbox_seq
         ON outbox_transitions(sandbox_id, seq);
-
-      CREATE TABLE IF NOT EXISTS naive_ledger_entries (
-        id TEXT PRIMARY KEY,
-        sandbox_id TEXT NOT NULL,
-        seq INTEGER NOT NULL,
-        vendor_name TEXT NOT NULL,
-        recipient_address TEXT NOT NULL,
-        amount TEXT NOT NULL,
-        epoch TEXT NOT NULL,
-        invoice_id TEXT NOT NULL,
-        approved INTEGER NOT NULL,
-        reason_code TEXT NOT NULL,
-        memo TEXT,
-        created_at INTEGER NOT NULL
-      );
 
       CREATE TABLE IF NOT EXISTS historical_mainnet_links (
         id TEXT PRIMARY KEY,
@@ -300,7 +271,14 @@ export class ReserveRailStore {
         detail TEXT NOT NULL,
         created_at INTEGER NOT NULL
       );
+
+      DROP TABLE IF EXISTS naive_ledger_entries;
     `);
+
+    const sbxCols = db.prepare("PRAGMA table_info(sandboxes)").all() as Array<{ readonly name?: unknown }>;
+    if (sbxCols.some((c) => c.name === "naive_spent_total")) {
+      db.exec("ALTER TABLE sandboxes DROP COLUMN naive_spent_total;");
+    }
 
     const maxDemo = options?.maxDemoSandboxes ?? 200;
     return new ReserveRailStore(db, maxDemo, options?.scrubKey);
@@ -383,17 +361,54 @@ export class ReserveRailStore {
       .all(overflow) as Record<string, unknown>[];
 
     const delOutbox = this.db.prepare("DELETE FROM outbox_transitions WHERE sandbox_id = ?");
-    const delNaive = this.db.prepare("DELETE FROM naive_ledger_entries WHERE sandbox_id = ?");
     const delLinks = this.db.prepare("DELETE FROM historical_mainnet_links WHERE sandbox_id = ?");
     const delSbx = this.db.prepare("DELETE FROM sandboxes WHERE sandbox_id = ?");
 
     for (const v of victims) {
       const id = String(v.sandbox_id);
       delOutbox.run(id);
-      delNaive.run(id);
       delLinks.run(id);
       delSbx.run(id);
     }
+  }
+
+  private insertSandboxRow(
+    sandboxId: string,
+    scopeType: SandboxScopeType,
+    init: ReturnType<ReserveRailStore["buildGenesisValues"]>,
+    now: number,
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO sandboxes (
+          sandbox_id, scope_type, policy_root, allowlist_json,
+          epoch_cap, payroll_floor, policy_salt, balance,
+          spent_so_far, current_epoch, current_salt,
+          genesis_commitment, current_commitment,
+          naive_single_cap, naive_epoch_spent, naive_epoch,
+          in_flight_lease_id, in_flight_acquired_at, seq_counter,
+          created_at, updated_at, last_accessed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '0', ?, ?, ?, ?, ?, '0', ?, NULL, NULL, 0, ?, ?, ?)`,
+      )
+      .run(
+        sandboxId,
+        scopeType,
+        init.policyRoot.toString(10),
+        JSON.stringify(toStoredVendors(init.allowlist)),
+        init.epochCap.toString(10),
+        init.payrollFloor.toString(10),
+        init.policySalt.toString(10),
+        init.balance.toString(10),
+        init.epoch.toString(10),
+        init.currentSalt.toString(10),
+        init.genesisCommitment.toString(10),
+        init.genesisCommitment.toString(10),
+        init.naiveSingleCap.toString(10),
+        init.epoch.toString(10),
+        now,
+        now,
+        now,
+      );
   }
 
   public getOrCreateSandbox(
@@ -419,40 +434,7 @@ export class ReserveRailStore {
       }
 
       const init = this.buildGenesisValues(config);
-      this.db
-        .prepare(
-          `INSERT INTO sandboxes (
-            sandbox_id, scope_type, policy_root, allowlist_json,
-            epoch_cap, payroll_floor, policy_salt, balance,
-            spent_so_far, current_epoch, current_salt,
-            genesis_commitment, current_commitment,
-            naive_single_cap, naive_spent_total, naive_epoch_spent, naive_epoch,
-            in_flight_lease_id, in_flight_acquired_at, seq_counter,
-            created_at, updated_at, last_accessed_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?, ?)`,
-        )
-        .run(
-          sandboxId,
-          scopeType,
-          init.policyRoot.toString(10),
-          JSON.stringify(toStoredVendors(init.allowlist)),
-          init.epochCap.toString(10),
-          init.payrollFloor.toString(10),
-          init.policySalt.toString(10),
-          init.balance.toString(10),
-          "0",
-          init.epoch.toString(10),
-          init.currentSalt.toString(10),
-          init.genesisCommitment.toString(10),
-          init.genesisCommitment.toString(10),
-          init.naiveSingleCap.toString(10),
-          "0",
-          "0",
-          init.epoch.toString(10),
-          now,
-          now,
-          now,
-        );
+      this.insertSandboxRow(sandboxId, scopeType, init, now);
 
       const inserted = this.db
         .prepare("SELECT * FROM sandboxes WHERE sandbox_id = ?")
@@ -478,43 +460,9 @@ export class ReserveRailStore {
 
       const init = this.buildGenesisValues(config);
       this.db.prepare("DELETE FROM outbox_transitions WHERE sandbox_id = ?").run(sandboxId);
-      this.db.prepare("DELETE FROM naive_ledger_entries WHERE sandbox_id = ?").run(sandboxId);
 
       if (existing === undefined) {
-        this.db
-          .prepare(
-            `INSERT INTO sandboxes (
-              sandbox_id, scope_type, policy_root, allowlist_json,
-              epoch_cap, payroll_floor, policy_salt, balance,
-              spent_so_far, current_epoch, current_salt,
-              genesis_commitment, current_commitment,
-              naive_single_cap, naive_spent_total, naive_epoch_spent, naive_epoch,
-              in_flight_lease_id, in_flight_acquired_at, seq_counter,
-              created_at, updated_at, last_accessed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?, ?)`,
-          )
-          .run(
-            sandboxId,
-            scopeType,
-            init.policyRoot.toString(10),
-            JSON.stringify(toStoredVendors(init.allowlist)),
-            init.epochCap.toString(10),
-            init.payrollFloor.toString(10),
-            init.policySalt.toString(10),
-            init.balance.toString(10),
-            "0",
-            init.epoch.toString(10),
-            init.currentSalt.toString(10),
-            init.genesisCommitment.toString(10),
-            init.genesisCommitment.toString(10),
-            init.naiveSingleCap.toString(10),
-            "0",
-            "0",
-            init.epoch.toString(10),
-            now,
-            now,
-            now,
-          );
+        this.insertSandboxRow(sandboxId, scopeType, init, now);
       } else {
         this.db
           .prepare(
@@ -531,7 +479,6 @@ export class ReserveRailStore {
               genesis_commitment = ?,
               current_commitment = ?,
               naive_single_cap = ?,
-              naive_spent_total = '0',
               naive_epoch_spent = '0',
               naive_epoch = ?,
               in_flight_lease_id = NULL,
@@ -604,40 +551,7 @@ export class ReserveRailStore {
           this.evictExcessDemoSandboxes();
         }
         const init = this.buildGenesisValues();
-        this.db
-          .prepare(
-            `INSERT INTO sandboxes (
-              sandbox_id, scope_type, policy_root, allowlist_json,
-              epoch_cap, payroll_floor, policy_salt, balance,
-              spent_so_far, current_epoch, current_salt,
-              genesis_commitment, current_commitment,
-              naive_single_cap, naive_spent_total, naive_epoch_spent, naive_epoch,
-              in_flight_lease_id, in_flight_acquired_at, seq_counter,
-              created_at, updated_at, last_accessed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?, ?)`,
-          )
-          .run(
-            params.sandboxId,
-            scope,
-            init.policyRoot.toString(10),
-            JSON.stringify(toStoredVendors(init.allowlist)),
-            init.epochCap.toString(10),
-            init.payrollFloor.toString(10),
-            init.policySalt.toString(10),
-            init.balance.toString(10),
-            "0",
-            init.epoch.toString(10),
-            init.currentSalt.toString(10),
-            init.genesisCommitment.toString(10),
-            init.genesisCommitment.toString(10),
-            init.naiveSingleCap.toString(10),
-            "0",
-            "0",
-            init.epoch.toString(10),
-            now,
-            now,
-            now,
-          );
+        this.insertSandboxRow(params.sandboxId, scope, init, now);
         row = this.db
           .prepare("SELECT * FROM sandboxes WHERE sandbox_id = ?")
           .get(params.sandboxId) as Record<string, unknown>;
@@ -757,8 +671,8 @@ export class ReserveRailStore {
             new_spent, new_salt, status, provenance_mode,
             job_id, tx_hash, block_hash, tx_explorer_url, block_explorer_url,
             proof_json, public_signals_json, public_signals_array_json,
-            error_message, retry_count, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_SUBMIT', ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, NULL, 0, ?, ?)`,
+            error_message, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_SUBMIT', ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, NULL, ?, ?)`,
         )
         .run(
           params.outboxId,
@@ -953,17 +867,13 @@ export class ReserveRailStore {
 
   public recordNaiveDecision(params: {
     readonly sandboxId: string;
-    readonly vendorName: string;
-    readonly recipientAddress: string;
     readonly amount: bigint;
     readonly epoch: bigint;
-    readonly invoiceId: string;
-    readonly memo: string | null;
-  }): NaiveLedgerEntry {
+  }): NaiveDecisionOutcome {
     return this.runImmediate(() => {
       const now = Date.now();
       const sbxRow = this.db
-        .prepare("SELECT * FROM sandboxes WHERE sandbox_id = ?")
+        .prepare("SELECT naive_single_cap, naive_epoch, naive_epoch_spent FROM sandboxes WHERE sandbox_id = ?")
         .get(params.sandboxId) as Record<string, unknown> | undefined;
       if (sbxRow === undefined) {
         throw new Error(`Sandbox ${params.sandboxId} not found for naive execution`);
@@ -972,32 +882,22 @@ export class ReserveRailStore {
       const singleCap = BigInt(String(sbxRow.naive_single_cap));
       const prevEpoch = BigInt(String(sbxRow.naive_epoch));
       const prevEpochSpent = BigInt(String(sbxRow.naive_epoch_spent));
-      const prevTotal = BigInt(String(sbxRow.naive_spent_total));
 
       const approved = params.amount >= 0n && params.amount <= singleCap;
       const reasonCode = approved ? "NAIVE_SINGLE_CAP_PASS" : "NAIVE_SINGLE_CAP_EXCEEDED";
 
-      const countRow = this.db
-        .prepare("SELECT COUNT(*) AS cnt FROM naive_ledger_entries WHERE sandbox_id = ?")
-        .get(params.sandboxId) as Record<string, unknown> | undefined;
-      const seq = Number(countRow?.cnt ?? 0) + 1;
-      const entryId = `naive_${crypto.randomUUID()}`;
-
       if (approved) {
-        const nextTotal = prevTotal + params.amount;
         const nextEpochSpent =
           params.epoch === prevEpoch ? prevEpochSpent + params.amount : params.amount;
         this.db
           .prepare(
             `UPDATE sandboxes SET
-              naive_spent_total = ?,
               naive_epoch_spent = ?,
               naive_epoch = ?,
               updated_at = ?
             WHERE sandbox_id = ?`,
           )
           .run(
-            nextTotal.toString(10),
             nextEpochSpent.toString(10),
             params.epoch.toString(10),
             now,
@@ -1005,63 +905,8 @@ export class ReserveRailStore {
           );
       }
 
-      this.db
-        .prepare(
-          `INSERT INTO naive_ledger_entries (
-            id, sandbox_id, seq, vendor_name, recipient_address,
-            amount, epoch, invoice_id, approved, reason_code, memo, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          entryId,
-          params.sandboxId,
-          seq,
-          params.vendorName,
-          params.recipientAddress,
-          params.amount.toString(10),
-          params.epoch.toString(10),
-          params.invoiceId,
-          approved ? 1 : 0,
-          reasonCode,
-          params.memo,
-          now,
-        );
-
-      return {
-        id: entryId,
-        sandboxId: params.sandboxId,
-        seq,
-        vendorName: params.vendorName,
-        recipientAddress: params.recipientAddress,
-        amount: params.amount.toString(10),
-        epoch: params.epoch.toString(10),
-        invoiceId: params.invoiceId,
-        approved,
-        reasonCode,
-        memo: params.memo,
-        createdAt: new Date(now).toISOString(),
-      };
+      return { approved, reasonCode };
     });
-  }
-
-  public getNaiveEntries(sandboxId: string): NaiveLedgerEntry[] {
-    const rows = this.db
-      .prepare("SELECT * FROM naive_ledger_entries WHERE sandbox_id = ? ORDER BY seq ASC")
-      .all(sandboxId) as Record<string, unknown>[];
-    return rows.map((r) => ({
-      id: String(r.id),
-      sandboxId: String(r.sandbox_id),
-      seq: Number(r.seq),
-      vendorName: String(r.vendor_name),
-      recipientAddress: String(r.recipient_address),
-      amount: String(r.amount),
-      epoch: String(r.epoch),
-      invoiceId: String(r.invoice_id),
-      approved: Number(r.approved) === 1,
-      reasonCode: String(r.reason_code),
-      memo: r.memo === null ? null : String(r.memo),
-      createdAt: new Date(Number(r.created_at)).toISOString(),
-    }));
   }
 
   public getReceipts(sandboxId: string): TreasuryReceipt[] {
@@ -1117,28 +962,6 @@ export class ReserveRailStore {
     });
   }
 
-  public getActiveOutboxLinks(
-    sandboxId: string,
-  ): Array<{
-    readonly prevCommitment: string;
-    readonly newCommitment: string;
-    readonly invoiceHash: string;
-  }> {
-    const rows = this.db
-      .prepare(
-        `SELECT prev_commitment, new_commitment, invoice_hash
-         FROM outbox_transitions
-         WHERE sandbox_id = ? AND status != 'ROLLED_BACK'
-         ORDER BY seq ASC`,
-      )
-      .all(sandboxId) as Record<string, unknown>[];
-    return rows.map((r) => ({
-      prevCommitment: String(r.prev_commitment),
-      newCommitment: String(r.new_commitment),
-      invoiceHash: String(r.invoice_hash),
-    }));
-  }
-
   public getHistoricalMainnetLinks(sandboxId: string): MainnetExplorerLink[] {
     const rows = this.db
       .prepare(
@@ -1156,39 +979,6 @@ export class ReserveRailStore {
       amount: String(r.amount),
       createdAt: new Date(Number(r.created_at)).toISOString(),
     }));
-  }
-
-  public recordHistoricalMainnetLink(params: {
-    readonly id: string;
-    readonly sandboxId: string;
-    readonly txHash: string;
-    readonly txExplorerUrl: string;
-    readonly jobId: string | null;
-    readonly amount: string;
-  }): void {
-    this.runImmediate(() => {
-      const existing = this.db
-        .prepare("SELECT id FROM historical_mainnet_links WHERE id = ?")
-        .get(params.id);
-      if (existing !== undefined) {
-        return;
-      }
-      this.db
-        .prepare(
-          `INSERT INTO historical_mainnet_links (
-            id, sandbox_id, tx_hash, tx_explorer_url, job_id, amount, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          params.id,
-          params.sandboxId,
-          params.txHash,
-          params.txExplorerUrl,
-          params.jobId,
-          params.amount,
-          Date.now(),
-        );
-    });
   }
 
   public getIdempotencyRecord(taskId: string): IdempotencyRecord | null {

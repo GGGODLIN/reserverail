@@ -16,7 +16,6 @@ export interface CfoView {
   readonly spentSoFar: string;
   readonly epoch: string;
   readonly naiveSingleCap: string;
-  readonly naiveSpentTotal: string;
   readonly naiveEpochSpent: string;
   readonly allowlist: readonly AllowlistVendor[];
 }

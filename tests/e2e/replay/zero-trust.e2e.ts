@@ -96,10 +96,5 @@ describe("Story 6: private witness vs public signals, and zero-trust verificatio
     await expect(tamper).toContainText("Server local verify: FAILED");
     await expect(tamper).toContainText("Kurier Mainnet: not attempted (DETERMINISTIC_REPLAY)");
     await expect(tamper).toContainText("Audit chain with the tampered receipt: INVALID · INVALID_PROOF");
-
-    const bundle = await browser.waitForDownload(() =>
-      verify.getByRole("button", "Download proof bundle").tap(),
-    );
-    expect(bundle.suggestedFilename).toMatch(/^reserverail-proof-C1-sbx_[0-9a-f]{12}\.json$/);
   });
 });
