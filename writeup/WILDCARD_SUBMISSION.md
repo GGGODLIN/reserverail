@@ -1,41 +1,42 @@
 # Event 03: Wildcard Portal Submission Copy — ReserveRail
 
-## 1. Exact Portal Field Values (`/dashboard/submissions?category=wildcard`)
+## 1. Submitted Portal Field Values (`/dashboard/submissions`, Wildcard tab — submitted 2026-11-17, status `PENDING`)
+
+The portal joins AGENT ENDPOINT, WHAT IT DOES, ADDITIONAL LINKS, and MESSAGE TO JUDGES into one `statement` field and the server caps that combined field at `2,000` characters, even though the form shows separate `2,000` and `1,000` counters. The submitted combined statement is `1,844` characters.
 
 - **PROJECT TITLE**: `ReserveRail`
 - **GITHUB REPOSITORY LINK**: [https://github.com/GGGODLIN/reserverail](https://github.com/GGGODLIN/reserverail)
 - **AGENT ENDPOINT**: [https://reserverail.gggodlin.com/agent](https://reserverail.gggodlin.com/agent)
 - **PROOF REFERENCE**: [https://zkverify.subscan.io/extrinsic/0xbfecb76a413b16c25669e703b84305d00d6b8cc06c5f714dca1431c6f1379de4](https://zkverify.subscan.io/extrinsic/0xbfecb76a413b16c25669e703b84305d00d6b8cc06c5f714dca1431c6f1379de4)
 
-### WHAT IT DOES (`<= 2,000` characters)
+### WHAT IT DOES (`890` characters)
 
 ```text
-ReserveRail is a verifiable multi-agent treasury spend gate backed by Circom 2.1.5 Groth16 state-transition proofs settled on zkVerify Mainnet via Kurier.
+ReserveRail is a spend gate for teams whose AI payment agents share one treasury. Every payment is a Circom Groth16 state-transition proof (9,055 constraints) verified on zkVerify Mainnet via Kurier (vkHash 0x38596f3f67e25da5e07975ab2f1cb68da47baed202a4c2c765afcb910c1f1fba).
 
-Teams running multiple AI payment agents (cloud bills, SaaS renewals, contractor invoices) against a shared treasury hit three failure modes that per-transaction limits and ordinary signatures cannot stop:
-1. Prompt Injection Hijack: Poisoned invoice memos swap a vendor wallet for 0xBAD...0999.
-2. Structuring: Three $12,000 invoices individually clear a $15,000 single-tx cap while breaching a $30,000 epoch cap.
-3. Concurrent Reserve Race: Two honest agents read a $100,000 balance simultaneously and each spend $25,000, breaching a $60,000 mandatory Payroll Reserve Floor.
+It stops three drains that per-payment caps miss: a poisoned invoice memo that swaps the payee (blocked by a Poseidon Merkle allowlist), three $12,000 bills split under a $15,000 cap (blocked by a $30,000 epoch cap), and two agents racing on $100,000 past a $60,000 payroll floor (blocked by the floor check plus a SQLite lease taken before proving, so the loser wastes 0 proofs).
 
-Publishing balances, reserve floors, caps, and supplier allowlists on-chain leaks confidential runway; signing agent logs only proves who spoke, not whether cumulative spend stayed inside policy.
-
-Because zkVerify verifies stateless ZK proofs rather than storing mutable app state, ReserveRail enforces an honest Three-Layer Trust Architecture:
-- Layer 1 (9,055-constraint Groth16 Circuit, vkHash 0x38596f3f67e25da5e07975ab2f1cb68da47baed202a4c2c765afcb910c1f1fba): Proves Poseidon Merkle allowlist inclusion (depth 10), 64-bit pure-addition bounds (newSpent <= epochCap and newSpent + payrollFloor <= balance, preventing finite-field underflow), and C_old -> C_new commitment linkage with zero confidential leakage.
-- Layer 2 (SQLite Outbox & Pre-Prove In-Flight Lease): Serializes concurrent internal agents before WASM proving so runners-up perform 0 wasted proofs on stale C_old and immediately re-evaluate against C_1.
-- Layer 3 (Public Offline verifyAuditChain): Runs identically in CLI, server, and browser (snarkjs.groth16.verify) to catch any omitted link, C_old fork, or duplicate invoiceHash across C_0 -> C_n.
+The balance, floor, and cap stay private; only commitments C_old -> C_new go public. zkVerify is stateless, so a shared verifyAuditChain (server, CLI, and browser) checks the C_0 -> C_n chain for gaps, forks, and replayed invoices.
 ```
 
-### MESSAGE TO JUDGES (`<= 1,000` characters)
+### ADDITIONAL LINKS
 
 ```text
-60-Second Judge Script (zero login or wallet):
-1. Open https://reserverail.gggodlin.com — isolated ?sandbox=sbx_<id> at C_0 in LIVE Mainnet mode.
-2. Click Act 1 (Prompt Injection -> ALLOWLIST_MISS + AWS C_0->C_1), Act 2 (3x$12k -> 3rd shot EPOCH_CAP_EXCEEDED), and Act 3 (2x$25k race -> 0 stale proofs + PAYROLL_FLOOR_BREACH).
-3. Compare CFO Private Witness (100k/60k/50k) vs External Auditor Public Signals (0/3 confidential values exposed), then click "Verify Groth16 proof in this browser", "Verify audit chain in this browser", and "Tamper & Send to Kurier Mainnet".
+https://reserverail.gggodlin.com
+https://youtu.be/NO--HeY-e3A
+https://blog.gggodlin.com/hackathon/reserverail/
+https://x.com/GGGODLIN/status/2122684298369384846
+```
 
-Live Finalized Mainnet Extrinsic: https://zkverify.subscan.io/extrinsic/0xbfecb76a413b16c25669e703b84305d00d6b8cc06c5f714dca1431c6f1379de4
-Agent Docs (GET) & HMAC (POST): https://reserverail.gggodlin.com/agent
-Local zero-mock check (Node >=24.1): git clone https://github.com/GGGODLIN/reserverail && cd reserverail && npm ci && npm test
+### MESSAGE TO JUDGES (`699` characters)
+
+```text
+60-second judge script (no login or wallet):
+1. Open https://reserverail.gggodlin.com (your own sandbox, LIVE Mainnet mode).
+2. Run Acts 1-3: ALLOWLIST_MISS, EPOCH_CAP_EXCEEDED on the 3rd payment, PAYROLL_FLOOR_BREACH with 0 stale proofs.
+3. Compare the CFO's private witness with the auditor's public signals (0 of 3 exposed), then click Verify Groth16 proof in this browser, Verify audit chain in this browser, and Tamper & Send to Kurier Mainnet.
+Finalized Mainnet payment: https://zkverify.subscan.io/extrinsic/0xbfecb76a413b16c25669e703b84305d00d6b8cc06c5f714dca1431c6f1379de4
+Local check (Node >= 24.1): git clone https://github.com/GGGODLIN/reserverail && cd reserverail && npm ci && npm test
 ```
 
 ---

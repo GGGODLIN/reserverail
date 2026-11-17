@@ -3,6 +3,8 @@
 **Verifiable Multi-Agent Treasury Spend Rail Backed by Circom 2.x (`Groth16` / `bn128`) State-Transition Proofs on `zkVerify` Mainnet via Kurier.**
 
 - **Live Dual-Perspective Workbench**: [https://reserverail.gggodlin.com](https://reserverail.gggodlin.com)
+- **53-Second Launch Video**: [https://youtu.be/NO--HeY-e3A](https://youtu.be/NO--HeY-e3A)
+- **Technical Write-up**: [https://blog.gggodlin.com/hackathon/reserverail/](https://blog.gggodlin.com/hackathon/reserverail/)
 - **Signed Agent Protocol Endpoint (`GET` docs / `POST` HMAC)**: [https://reserverail.gggodlin.com/agent](https://reserverail.gggodlin.com/agent)
 - **Registered `zkVerify` Mainnet `vkHash`**: `0x38596f3f67e25da5e07975ab2f1cb68da47baed202a4c2c765afcb910c1f1fba`
 - **Baseline Finalized Mainnet Extrinsic**: [0xa14dbafc0c9b3694996ca2145c0fb1c04790ebe0c8949fc10eb73c787eea00ea](https://zkverify.subscan.io/extrinsic/0xa14dbafc0c9b3694996ca2145c0fb1c04790ebe0c8949fc10eb73c787eea00ea)

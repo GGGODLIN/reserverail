@@ -1,5 +1,7 @@
 # Stopping AI Treasury Drains with Stateless ZK State Chains on zkVerify (`#AgentGames`)
 
+> Published 2026-11-17 at [https://blog.gggodlin.com/hackathon/reserverail/](https://blog.gggodlin.com/hackathon/reserverail/) with the launch video [https://youtu.be/NO--HeY-e3A](https://youtu.be/NO--HeY-e3A) embedded; the published page shortens the title to "ReserveRail: Stopping AI Treasury Drains with ZK State Chains".
+
 *Built for **zkVerify Agent Games** (`#AgentGames`) — Live Dual-Perspective Workbench: [https://reserverail.gggodlin.com](https://reserverail.gggodlin.com) · Source Code: [https://github.com/GGGODLIN/reserverail](https://github.com/GGGODLIN/reserverail)*
 
 When engineering teams wire autonomous AI agents to pay cloud bills, SaaS renewals, and contractor invoices from a shared operational treasury, they usually reach for two familiar guardrails: **static per-transaction limits** (`singleCap <= $15,000`) and **signed agent logs**.
