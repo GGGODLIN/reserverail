@@ -46,6 +46,10 @@ See [/openspec/glossary.md](/openspec/glossary.md), [/openspec/decisions/0001-th
 - **`LIVE`**: Production mode when `KURIER_API_KEY` is configured — submits real `Groth16` proofs to `zkVerify` Mainnet via Kurier and streams `Local Verified -> Kurier Submitted -> IncludedInBlock -> Finalized` with clickable Subscan links.
 - **`DETERMINISTIC_REPLAY`**: Credential-free local mode — still generates real local `Groth16` proofs verifiable zero-trust in your browser, and clearly labels offline relay fallback using the recorded Mainnet baseline attestation.
 
+### Workbench Preview
+
+![ReserveRail Dual-Perspective Workbench](https://raw.githubusercontent.com/GGGODLIN/reserverail/main/docs/screenshots/04-act3-PAYROLL_FLOOR_BREACH-cfo-auditor-browser-verified.png)
+
 ---
 
 ## Local Verification (Zero Credentials Needed)
